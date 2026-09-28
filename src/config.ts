@@ -29,13 +29,22 @@ import { CONFIG_DIR_NAME, envVar } from "./names.js";
  * Loopback is the default, not a hardcoded value. The deprecated connector built
  * `http://127.0.0.1:${port}` with the host baked in, so only the port could ever
  * be overridden; a consumer running the product anywhere else had no path at all.
+ *
+ * The override is currently forward-looking rather than immediately useful: the
+ * product binds loopback only (`web/server.mjs:50` hardcodes `HOST`) and rejects
+ * any Host header outside 127.0.0.1, localhost and [::1]. So pointing this at a
+ * remote host needs a product-side change first. Having the override costs
+ * nothing now and adding one later would be a breaking config change.
  */
 export const DEFAULT_HOST = "127.0.0.1";
 
 /**
- * The port the product answers on today. It is also Vite's default dev port, so
- * it collides on developer machines and a stale process squatting it serves a
- * stale build — which is exactly why the override has to exist.
+ * The product's own port, chosen and defended rather than inherited: Vite was
+ * deliberately moved to 5174 so the product server could keep 5173
+ * (`web/server.mjs:47`, `ui/vite.config.js`). The resemblance to Vite's default
+ * is what makes it look accidental; it is the opposite.
+ *
+ * The product honours `PORT`, so the override here exists to follow it.
  */
 export const DEFAULT_PORT = 5173;
 

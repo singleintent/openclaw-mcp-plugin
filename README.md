@@ -27,9 +27,17 @@ Malformed JSON, a non-object file, an out-of-range port, or an unreadable or
 empty token file all **fail loudly** rather than falling back to defaults and
 appearing to work against the wrong host.
 
-Loopback is the *default*, not a fixed value. Both host and port are
-overridable: `5173` is Vite's default dev port, so it collides on developer
-machines, and a stale process squatting it will serve a stale build.
+Loopback is the *default*, not a fixed value. `5173` is the product's own port,
+chosen rather than inherited — Vite was deliberately moved to `5174` so the
+product server could keep it — and the product honours `PORT`, so this override
+exists to follow it. A stale process squatting `5173` will serve a stale build,
+which is what the override is for.
+
+The host override is currently **forward-looking rather than immediately useful**:
+the product binds loopback only and rejects any `Host` header outside
+`127.0.0.1`, `localhost` and `[::1]`, so pointing this at a remote host needs a
+product-side change first. It exists because adding it later would be a breaking
+change to a published config contract, and having it costs nothing.
 
 > **Do not configure this plugin by editing `mcp.servers.singleintent`.** That
 > override **replaces** the manifest definition rather than merging with it, so
@@ -95,8 +103,23 @@ Returns `id`, `name`, `workingDirectory` and `agentCount` per project, with
 scalars pass through; unbounded collections become counts. That array is what
 grows as the product grows, and an agent choosing what to do next needs to know
 which projects exist and how big they are, not every member id. On live data the
-projection is 45% smaller than the raw response. Ask the agents verb for
-identities.
+projection is 45% smaller than the raw response.
+
+`workingDirectory` is kept for the opposite reason: it is identity, not payload.
+`name` alone is ambiguous across similarly-named projects; the path is what maps a
+project to a checkout, and it is how a person actually recognises one.
+
+**What this projection cannot answer, and the obligation that follows.** "Which
+project is this agent in?" is a real question, and a response carrying only
+`agentCount` cannot answer it. Dropping `agentIds` therefore makes a detail verb
+**required, not optional** — `get_project`, returning the full `agentIds` for one
+project, is the next verb.
+
+This is deliberately *not* solved by adding a field-selector parameter to
+`list_projects`. A summary verb plus a detail verb is the simpler contract and the
+one consumers already expect; a selector makes every response shape conditional on
+arguments, which is harder to document, harder to cache, and harder to reason
+about at the call site.
 
 ## Names
 
