@@ -9,6 +9,8 @@
  * Config is resolved by this process rather than handed to it; see src/config.ts
  * for why none of OpenClaw's config surfaces can reach a stdio subprocess.
  */
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -284,8 +286,40 @@ export async function main(): Promise<void> {
   await server.connect(new StdioServerTransport());
 }
 
+/**
+ * Is this module the process entry point?
+ *
+ * The obvious spelling of this check — `import.meta.url === "file://" + argv[1]`
+ * — is wrong in two ways, and both fail **silently**: the guard is false, nothing
+ * starts, the process exits 0, and OpenClaw sees a server that connected to
+ * nothing and reported no error.
+ *
+ * 1. **Symlinks.** Node resolves `import.meta.url` through `realpath` but leaves
+ *    `argv[1]` as the path it was given. Launching the very same file by a path
+ *    that crosses a symlink makes the two disagree. This is not exotic: it is how
+ *    `/tmp` behaves on macOS (`/private/tmp`), how pnpm lays out `node_modules`,
+ *    and how several version managers place binaries. Found by installing the
+ *    packed tarball under `/tmp` and driving it over stdio — the server exited 0
+ *    and served nothing.
+ * 2. **Encoding.** `file://` + a raw path is not a URL. A launch path containing
+ *    a space, `#` or `?` produces a string that never equals the properly encoded
+ *    `import.meta.url`.
+ *
+ * Both go away by comparing real filesystem paths rather than hand-built URLs.
+ */
+function isEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    // An unreadable or deleted entry path is not this module.
+    return false;
+  }
+}
+
 // Only self-start when executed directly, so tests can import this module.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryPoint()) {
   main().catch((error: unknown) => {
     // stdout carries the MCP framing; diagnostics must go to stderr, where
     // OpenClaw logs them with a `bundle-mcp:singleintent:` prefix.

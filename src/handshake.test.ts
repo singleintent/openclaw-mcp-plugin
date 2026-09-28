@@ -7,6 +7,9 @@
  * when the package ships no executable code.
  */
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { TOOLS } from "./mcp-server.js";
@@ -17,8 +20,8 @@ const PROTOCOL_VERSION = "2025-06-18";
 
 type Response = { id?: number; result?: Record<string, unknown> };
 
-async function handshake(): Promise<Response[]> {
-  const child = spawn(process.execPath, [SERVER], {
+async function handshake(serverPath: string = SERVER): Promise<Response[]> {
+  const child = spawn(process.execPath, [serverPath], {
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -81,5 +84,34 @@ describe("built server answers a real MCP handshake", () => {
     // every added verb into a failure that says nothing about the handshake.
     expect(tools.map((t) => t.name)).toEqual(TOOLS.map((tool) => tool.name));
     expect(tools.length).toBeGreaterThanOrEqual(2);
+  }, 30_000);
+
+  /**
+   * Regression for a silent no-start.
+   *
+   * The self-start guard used to compare `import.meta.url` against
+   * `"file://" + process.argv[1]`. Node resolves the first through `realpath` and
+   * leaves the second alone, so launching the same file by a path crossing a
+   * symlink made the guard false: nothing started, the process exited **0**, and
+   * the only symptom was a server that served no tools. Found by installing the
+   * packed tarball under `/tmp` — which is a symlink to `/private/tmp` on macOS —
+   * and driving it over stdio.
+   *
+   * The launch path is the whole point of this test, so it spawns through a real
+   * symlink rather than asserting on the guard's internals. A green
+   * `initializes and lists tools over stdio` above does not cover it: that one
+   * runs via a path with no symlink in it.
+   */
+  it("starts when launched through a symlinked path", async () => {
+    const link = join(mkdtempSync(join(tmpdir(), "singleintent-symlink-")), "server.js");
+    symlinkSync(SERVER, link);
+    try {
+      const responses = await handshake(link);
+      const tools =
+        (responses.find((r) => r.id === 2)?.result as { tools?: { name?: string }[] })?.tools ?? [];
+      expect(tools.map((t) => t.name)).toEqual(TOOLS.map((tool) => tool.name));
+    } finally {
+      rmSync(link, { force: true });
+    }
   }, 30_000);
 });
