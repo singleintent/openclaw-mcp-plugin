@@ -21,6 +21,7 @@ import { loadConfig, type Config } from "./config.js";
 import { SERVER_NAME, SERVER_VERSION } from "./names.js";
 import { getProject } from "./verbs/get-project.js";
 import { listAgents } from "./verbs/list-agents.js";
+import { listConnections } from "./verbs/list-connections.js";
 import { listProjects } from "./verbs/list-projects.js";
 import { listTemplates } from "./verbs/list-templates.js";
 import { DEFAULT_LIMIT, MAX_LIMIT } from "./verbs/paging.js";
@@ -125,6 +126,20 @@ export const TOOLS: Tool[] = [
       properties: { ...pagingSchema("templates") },
     },
   },
+  {
+    name: "list_connections",
+    description:
+      "List agent-to-agent connections. Each is directed: from was pointed at " +
+      "to and asked to introduce itself, so the pair is not symmetric. Returns " +
+      "the whole record — these fields are all bounded, so nothing is dropped. " +
+      "The from and to ids are not expanded into agent records; call list_agents " +
+      "for that.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { ...pagingSchema("connections") },
+    },
+  },
 ];
 
 /**
@@ -168,6 +183,15 @@ export function createServer(config: Config): Server {
           limit: args.limit as number | undefined,
           offset: args.offset as number | undefined,
           projectId: args.project_id,
+        },
+        options,
+      ),
+    list_connections: (args, options) =>
+      listConnections(
+        config,
+        {
+          limit: args.limit as number | undefined,
+          offset: args.offset as number | undefined,
         },
         options,
       ),

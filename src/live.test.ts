@@ -10,6 +10,7 @@ import { ProductError } from "./client.js";
 import { baseUrl, loadConfig } from "./config.js";
 import { ProjectNotFoundError, getProject } from "./verbs/get-project.js";
 import { listAgents } from "./verbs/list-agents.js";
+import { listConnections } from "./verbs/list-connections.js";
 import { listProjects } from "./verbs/list-projects.js";
 import { listTemplates } from "./verbs/list-templates.js";
 
@@ -161,6 +162,20 @@ describe("live product", () => {
     }
     // The lengths must describe the real store, not be zeros standing in for it.
     expect(result.templates.some((template) => template.contentLength > 0)).toBe(true);
+  }, 20_000);
+
+  it("lists real connections whole, with direction preserved", async () => {
+    if (!reachable) return;
+    const result = await listConnections(config, { limit: 200 });
+
+    expect(result.total).toBeGreaterThan(0);
+    for (const connection of result.connections) {
+      expect(connection.id.length).toBeGreaterThan(0);
+      expect(typeof connection.from).toBe("string");
+      expect(typeof connection.to).toBe("string");
+      // Nothing was dropped, so every stored field is here.
+      expect(Object.keys(connection).sort()).toEqual(["establishedAt", "from", "id", "to"]);
+    }
   }, 20_000);
 
   it("rejects a project id the product could never have minted", async () => {
