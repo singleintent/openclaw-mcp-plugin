@@ -22,6 +22,7 @@ import { SERVER_NAME, SERVER_VERSION } from "./names.js";
 import { getProject } from "./verbs/get-project.js";
 import { listAgents } from "./verbs/list-agents.js";
 import { listProjects } from "./verbs/list-projects.js";
+import { listTemplates } from "./verbs/list-templates.js";
 import { DEFAULT_LIMIT, MAX_LIMIT } from "./verbs/paging.js";
 
 export { SERVER_NAME, SERVER_VERSION };
@@ -111,6 +112,19 @@ export const TOOLS: Tool[] = [
       },
     },
   },
+  {
+    name: "list_templates",
+    description:
+      "List onboarding role templates: id, name, and the character length of " +
+      "each template's content. The content itself is not returned — it is 95% " +
+      "of the raw response and an agent listing templates is choosing one, not " +
+      "reading one. This verb tells you which template to use, not what it says.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { ...pagingSchema("templates") },
+    },
+  },
 ];
 
 /**
@@ -154,6 +168,15 @@ export function createServer(config: Config): Server {
           limit: args.limit as number | undefined,
           offset: args.offset as number | undefined,
           projectId: args.project_id,
+        },
+        options,
+      ),
+    list_templates: (args, options) =>
+      listTemplates(
+        config,
+        {
+          limit: args.limit as number | undefined,
+          offset: args.offset as number | undefined,
         },
         options,
       ),

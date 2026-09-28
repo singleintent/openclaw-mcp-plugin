@@ -11,6 +11,7 @@ import { baseUrl, loadConfig } from "./config.js";
 import { ProjectNotFoundError, getProject } from "./verbs/get-project.js";
 import { listAgents } from "./verbs/list-agents.js";
 import { listProjects } from "./verbs/list-projects.js";
+import { listTemplates } from "./verbs/list-templates.js";
 
 const config = loadConfig({});
 
@@ -147,6 +148,20 @@ describe("live product", () => {
     }
     expect(checkedWithMembers).toBeGreaterThanOrEqual(2);
   }, 60_000);
+
+  it("lists real templates without their content", async () => {
+    if (!reachable) return;
+    const result = await listTemplates(config, { limit: 200 });
+
+    expect(result.total).toBeGreaterThan(0);
+    for (const template of result.templates) {
+      expect(template).not.toHaveProperty("content");
+      expect(typeof template.contentLength).toBe("number");
+      expect(template.id.length).toBeGreaterThan(0);
+    }
+    // The lengths must describe the real store, not be zeros standing in for it.
+    expect(result.templates.some((template) => template.contentLength > 0)).toBe(true);
+  }, 20_000);
 
   it("rejects a project id the product could never have minted", async () => {
     if (!reachable) return;
