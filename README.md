@@ -3,8 +3,10 @@
 An OpenClaw plugin that ships the SingleIntent MCP server as a plugin-owned
 stdio process.
 
-**Status: early.** Two verbs, `list_projects` and `get_project`. Everything below
-is verified against OpenClaw 2026.9.5 and a running product.
+**Status: the v1 read surface is complete.** Seven verbs — `list_projects`,
+`get_project`, `list_agents`, `list_templates`, `list_connections`,
+`get_backlog`, `get_activity`. All reads; no write verb exists yet. Everything
+below is verified against OpenClaw 2026.9.5 and a running product.
 
 ## Configuration
 
@@ -213,6 +215,160 @@ detail route lands later the swap is confined to `getProject()` in
 caller, so they are different error types. Collapsing them would make a stale id
 look like an outage.
 
+### `list_agents`
+
+The roster, each row carrying the onboarding status the product merges into it.
+Live: 53 rows, 53,688 bytes raw, 44.7% smaller after the projection.
+
+**Dropped, and why each:**
+
+| Field | Why |
+| --- | --- |
+| `thinkingLevels`, `thinkingOptions` | Byte-identical on all 53 rows — 30.7% of the response for no per-row information. A fixed capability menu belonging to the host, not the agent. A count would be the constant 8, so they are dropped rather than counted. |
+| `agentRuntime` | Same reason: identical on every row. |
+| `defaultId`, `ownership`, `selectionRequired`, `mainKey`, `scope` | The Gateway's agent-*selection* policy — which agent answers an unaddressed message. A different question from "which agents exist", and it should not ride along under a name that does not say so. |
+
+`thinkingDefault` is kept while the levels list is dropped, and the pairing is
+the point: the levels available are the host's, the level chosen is the agent's.
+`onboarding` is kept whole — it is the reason this route exists rather than a
+direct Gateway call.
+
+> **`createdAt` here is epoch milliseconds.** On `/api/projects` the field of the
+> same name is an ISO-8601 string. Passed through unnormalised, because this
+> connector reports what the product stores; inventing a consistency the product
+> does not have would misrepresent it.
+
+#### `project_id`, and the membership guarantee
+
+The filter runs in the connector, not on the server. Every product route is an
+exact-string match on `req.url` with no query parsing, so a query parameter would
+be accepted, ignored, and return an unfiltered list that looks like a successful
+filter.
+
+Membership is read from `/api/projects` — the same source `get_project` reads —
+so the two verbs cannot disagree about membership by construction. They can
+disagree about **existence**, and on live data they do: one project still lists
+an agent that was renamed out of the roster. Those ids come back in
+`missingFromRoster` rather than vanishing, so the relationship holds:
+
+```
+get_project(id).agentIds  ==  agents[].id  ∪  missingFromRoster
+```
+
+`missingFromRoster` is always present, `[]` when no filter is set, so the shape
+is byte-identical whether `project_id` is passed or not.
+
+### `list_templates`
+
+`id`, `name`, and `contentLength`. **`content` is not returned**: live it is
+35,903 of the response's 37,913 bytes — 94.7% — and an agent listing templates is
+choosing one, not reading one.
+
+This extends the shaping rule from unbounded *collections* to unbounded *text*.
+A template's content is an agent's whole system prompt, so the property the rule
+is about is unboundedness rather than array-ness, and `contentLength` is the
+count analogue for a string. It counts characters, not bytes; zero is a real
+value, not a stand-in for absent.
+
+> **A known gap, stated rather than papered over.** Dropping `content` makes a
+> `get_template` an obligation in the same way dropping `agentIds` made
+> `get_project` one — nothing in the connector can currently read a template's
+> text. It is not added here because W-030 scopes five verbs and that is not one
+> of them. Until it lands: this verb tells you *which* template to use, not what
+> it says.
+
+### `list_connections`
+
+The whole record — `id`, `from`, `to`, `establishedAt`. All four are bounded
+scalars, so **the projection drops nothing**. That is the rule's output here, not
+a place the rule was skipped; cutting a field for symmetry with the other verbs
+would be cutting without a reason. `total` and `truncated` are still present,
+because the list contract does not depend on whether anything was dropped.
+
+A connection is **directed**: `from` was pointed at `to` and asked to introduce
+itself, under the product's interjection-only model. The pair is not symmetric
+and is not presented as one.
+
+The ids are not expanded into agent records. That would mean a second request to
+the Gateway-backed `/api/agents` on every call, making a store-backed verb fail
+whenever the Gateway is down — a 500-class surface turned into a 502-class one
+for nothing. Call `list_agents` if you want the agents behind the ids.
+
+### `get_backlog`
+
+Every stored field, including `description`.
+
+**Read-only by design, not by omission.** `~/.joylabs/backlog.json` is written
+only by agents through their own file tools — no API, no locking. A write verb
+would add a second uncoordinated writer, and last-write-wins on a whole-file
+rewrite loses items silently. For the same reason **a stale read is not an
+error**: nothing here validates freshness or retries to chase it.
+
+`description` survives where `list_templates` cut `content`, by this
+discriminator: *does the row still answer the verb's question without the field?*
+A template row without content still identifies a template well enough to choose
+one. A backlog item without its description is a title and a status — the
+description **is** the item.
+
+Named `get_` per SCRUM-6, and still returning `{items, total, truncated}`: the
+thing inside the document is an unbounded list, and nobody should have to learn a
+second pagination story for the one verb whose name starts differently.
+
+### `get_activity`
+
+Running sessions plus those that ended inside the product's recently-ended
+window, and `now`.
+
+> **`now` is the product server's clock, passed through verbatim. Compute elapsed
+> time against it, not against your own clock.**
+
+Every timestamp in the response is epoch milliseconds on that same clock, and
+`now` is the reference point that makes them mean anything. Resampling it here —
+even with `Date.now()` on the same machine — would substitute a *different* clock
+as the reference for timestamps taken from the first, and the resulting
+"3 seconds ago" would be wrong by exactly the skew between them: invisible at the
+call site, and not something a caller would think to check. On one host that skew
+is small; across a host boundary, which `host` already allows for, it is
+unbounded.
+
+There is no fallback. If the product sends no usable `now`, the verb **fails**
+and says it is refusing to substitute a local clock, because a substituted
+reference is worse than a stated failure — it is wrong in a way that looks right.
+`nowSource` is returned alongside, constant `"product"`, so the answer is visible
+at the call site rather than only in this file.
+
+The session projection drops nothing — twelve bounded scalars. `displayName` is
+already truncated server-side and is not re-truncated here.
+
+## Errors, and the distinction worth keeping
+
+| Situation | Type | What it means |
+| --- | --- | --- |
+| Nothing answered | `ProductError` — "cannot reach the product at `<url>`" plus host and port provenance | The product is not running, or host/port are wrong |
+| `502`/`503`/`504` | `ProductUpstreamError` | The product **is** running and answered; the OpenClaw Gateway it proxies is what failed |
+| `500` | `ProductError` | The product's own flat-file store failed |
+
+The product splits its own failures this way: Gateway-backed routes
+(`/api/agents`, `/api/activity`) fail `502`, store-backed routes
+(`/api/projects`, `/api/templates`, `/api/connections`, `/api/backlog`) fail
+`500`. "The product is up but the Gateway is down" is a different state with a
+different owner than "the product is down", and flattening both into
+"unreachable" throws away the only signal that tells them apart.
+`ProductUpstreamError` is a subclass of `ProductError`, so existing handling
+still catches it.
+
+## Paging
+
+Every list verb returns `total` and an explicit `truncated`, and takes `limit`
+(1–200, default 50) and `offset`. `total` always means **rows that matched before
+the limit** — on a verb with a filter set, that is the post-filter count, not an
+inventory of everything that exists.
+
+The arithmetic lives once, in `src/verbs/paging.ts`, rather than being
+reimplemented per verb. Five hand-written copies agree on the day they are
+written and drift afterwards, and the drift surfaces as one verb reporting
+`truncated` differently from another.
+
 ## Names
 
 Three strings matter, and two of them are easy to conflate:
@@ -324,7 +480,7 @@ Expected, from the plugin's install path:
 
 ```json
 {"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.0"}},"jsonrpc":"2.0","id":1}
-{"result":{"tools":[{"name":"list_projects", ...},{"name":"get_project", ...}]},"jsonrpc":"2.0","id":2}
+{"result":{"tools":[{"name":"list_projects", ...},{"name":"get_project", ...},{"name":"list_agents", ...},{"name":"list_templates", ...},{"name":"list_connections", ...},{"name":"get_backlog", ...},{"name":"get_activity", ...}]},"jsonrpc":"2.0","id":2}
 ```
 
 The `serverInfo.name` in the first response is the string OpenClaw prefixes
