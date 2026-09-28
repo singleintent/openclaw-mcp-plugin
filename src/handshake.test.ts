@@ -9,6 +9,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { TOOLS } from "./mcp-server.js";
 
 const SERVER = fileURLToPath(new URL("../dist/mcp-server.js", import.meta.url));
 
@@ -75,6 +76,10 @@ describe("built server answers a real MCP handshake", () => {
 
     const listTools = responses.find((r) => r.id === 2);
     const tools = (listTools?.result as { tools?: { name?: string }[] })?.tools ?? [];
-    expect(tools.map((t) => t.name)).toEqual(["list_projects", "get_project"]);
+    // Checked against TOOLS rather than a hand-written list: this test exists to
+    // prove the built server really answers over stdio, and a literal here turns
+    // every added verb into a failure that says nothing about the handshake.
+    expect(tools.map((t) => t.name)).toEqual(TOOLS.map((tool) => tool.name));
+    expect(tools.length).toBeGreaterThanOrEqual(2);
   }, 30_000);
 });

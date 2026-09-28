@@ -9,6 +9,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { ProductError } from "./client.js";
 import { baseUrl, loadConfig } from "./config.js";
 import { ProjectNotFoundError, getProject } from "./verbs/get-project.js";
+import { listAgents } from "./verbs/list-agents.js";
 import { listProjects } from "./verbs/list-projects.js";
 
 const config = loadConfig({});
@@ -90,6 +91,66 @@ describe("live product", () => {
     expect(filtered.projects.map((p) => p.id)).toContain(seed.id);
     // The filtered shape is the unfiltered shape: same keys, fewer rows.
     expect(Object.keys(filtered).sort()).toEqual(Object.keys(all).sort());
+  }, 20_000);
+
+  it("lists the real roster with the projection holding", async () => {
+    if (!reachable) return;
+    const result = await listAgents(config, { limit: 200 });
+
+    expect(result.total).toBeGreaterThan(0);
+    expect(result.missingFromRoster).toEqual([]);
+    for (const agent of result.agents) {
+      expect(typeof agent.id).toBe("string");
+      expect(agent.id.length).toBeGreaterThan(0);
+      // The dropped fields must stay dropped against real data, not just fixtures.
+      expect(agent).not.toHaveProperty("thinkingLevels");
+      expect(agent).not.toHaveProperty("thinkingOptions");
+      expect(agent).not.toHaveProperty("agentRuntime");
+      // The product's own merge must survive, as null or as a record.
+      expect(Object.keys(result)).toContain("total");
+      if (agent.onboarding !== null) {
+        expect(typeof agent.onboarding.status).toBe("string");
+      }
+    }
+    // The Gateway envelope is not smuggled into the response.
+    expect(Object.keys(result).sort()).toEqual([
+      "agents",
+      "missingFromRoster",
+      "total",
+      "truncated",
+    ]);
+  }, 20_000);
+
+  /**
+   * The acceptance criterion W-030 calls out as the one worth catching: the two
+   * verbs must not disagree about membership. Checked across *every* project
+   * rather than the required two, because the live product has one project whose
+   * member was renamed out of the roster, and a two-project sample could miss it.
+   */
+  it("agrees with get_project about membership for every project", async () => {
+    if (!reachable) return;
+    const listed = await listProjects(config, { limit: 200 });
+    expect(listed.projects.length).toBeGreaterThanOrEqual(2);
+
+    let checkedWithMembers = 0;
+    for (const summary of listed.projects) {
+      const { project } = await getProject(config, { projectId: summary.id });
+      const filtered = await listAgents(config, { projectId: summary.id, limit: 200 });
+
+      const reconstructed = [
+        ...filtered.agents.map((agent) => agent.id),
+        ...filtered.missingFromRoster,
+      ].sort();
+      expect(reconstructed).toEqual([...project.agentIds].sort());
+      expect(filtered.total).toBe(filtered.agents.length);
+      if (project.agentIds.length > 0) checkedWithMembers += 1;
+    }
+    expect(checkedWithMembers).toBeGreaterThanOrEqual(2);
+  }, 60_000);
+
+  it("rejects a project id the product could never have minted", async () => {
+    if (!reachable) return;
+    await expect(listAgents(config, { projectId: "joy-labs" })).rejects.toThrow(/must be a UUID/);
   }, 20_000);
 
   it("fails a well-formed unknown id as a not-found, not as an outage", async () => {

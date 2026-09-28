@@ -29,25 +29,31 @@
  */
 import { getJson, type RequestOptions } from "../client.js";
 import type { Config } from "../config.js";
-
-export const DEFAULT_LIMIT = 50;
-export const MAX_LIMIT = 200;
+import {
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
+  asString,
+  assertPageInput,
+  paginate,
+  resolveAgentId,
+  resolveLimit,
+  resolveOffset,
+} from "./paging.js";
 
 /**
- * OpenClaw's own agent-id pattern, which the product mirrors in
- * `lib/joylabs-ids.js` as `AGENT_ID_RE`. Every id the Gateway can mint passes.
- *
- * That path carries a retired name because it is the product repo's real, current
- * filename and that repo has not been renamed; see the note in
- * `src/verbs/get-project.ts` before "fixing" it.
- *
- * Validated rather than passed through because the failure mode of not checking
- * is the one this repo consistently refuses: a structurally impossible id would
- * quietly match nothing and return an empty list that reads as a real answer.
- * A well-formed id matching no project still returns empty, because that is the
- * truthful answer.
+ * Re-exported rather than redefined. The paging contract moved to `paging.ts`
+ * when the second list verb landed, so that "every list verb matches
+ * `list_projects`" is enforced by one implementation instead of asserted about
+ * five. These names stay exported here because they were part of this module's
+ * surface first.
  */
-const AGENT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+export {
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
+  resolveAgentId,
+  resolveLimit,
+  resolveOffset,
+};
 
 /** The product's wire shape for a project. */
 type ApiProject = {
@@ -85,42 +91,9 @@ export type ListProjectsInput = {
   agentId?: unknown;
 };
 
-export function resolveLimit(limit: unknown): number {
-  if (limit === undefined || limit === null) return DEFAULT_LIMIT;
-  const value = typeof limit === "number" ? limit : Number(limit);
-  if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
-    throw new Error(
-      `limit must be an integer between 1 and ${MAX_LIMIT}, got ${JSON.stringify(limit)}`,
-    );
-  }
-  return value;
-}
-
-export function resolveOffset(offset: unknown): number {
-  if (offset === undefined || offset === null) return 0;
-  const value = typeof offset === "number" ? offset : Number(offset);
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`offset must be an integer of 0 or more, got ${JSON.stringify(offset)}`);
-  }
-  return value;
-}
-
-export function resolveAgentId(agentId: unknown): string | undefined {
-  if (agentId === undefined || agentId === null) return undefined;
-  if (typeof agentId !== "string" || !AGENT_ID_RE.test(agentId)) {
-    throw new Error(
-      `agent_id must be an agent id as the Gateway mints them, got ${JSON.stringify(agentId)}`,
-    );
-  }
-  return agentId;
-}
-
 /** Membership test against the raw wire shape, before the count replaces it. */
 const hasAgent = (project: ApiProject, agentId: string): boolean =>
   Array.isArray(project.agentIds) && project.agentIds.includes(agentId);
-
-const asString = (value: unknown): string | null =>
-  typeof value === "string" && value.length > 0 ? value : null;
 
 export function summarize(project: ApiProject): ProjectSummary {
   return {
@@ -136,19 +109,17 @@ export function shape(
   projects: ApiProject[],
   input: ListProjectsInput = {},
 ): ListProjectsResult {
-  const limit = resolveLimit(input.limit);
-  const offset = resolveOffset(input.offset);
   const agentId = resolveAgentId(input.agentId);
   // Filter, then page. The other order would page an unfiltered list and then
   // thin the page, so a caller would see short pages and a `total` that no
   // amount of paging could reach.
   const matching =
     agentId === undefined ? projects : projects.filter((project) => hasAgent(project, agentId));
-  const page = matching.slice(offset, offset + limit);
+  const page = paginate(matching, input);
   return {
-    projects: page.map(summarize),
-    total: matching.length,
-    truncated: offset + page.length < matching.length,
+    projects: page.rows.map(summarize),
+    total: page.total,
+    truncated: page.truncated,
   };
 }
 
@@ -158,8 +129,7 @@ export async function listProjects(
   options: RequestOptions = {},
 ): Promise<ListProjectsResult> {
   // Validate before the request, so a bad argument does not cost a round trip.
-  resolveLimit(input.limit);
-  resolveOffset(input.offset);
+  assertPageInput(input);
   resolveAgentId(input.agentId);
   const projects = await getJson<ApiProject[]>(config, "/api/projects", options);
   if (!Array.isArray(projects)) {

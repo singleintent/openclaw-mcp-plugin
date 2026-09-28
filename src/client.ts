@@ -11,6 +11,27 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 
 export class ProductError extends Error {}
 
+/**
+ * The product answered, but something it depends on did not.
+ *
+ * This distinction is not decorative. The product splits its own failures by
+ * where they came from: routes that proxy the OpenClaw Gateway (`/api/agents`,
+ * `/api/activity`) fail `502`, while routes backed by its own flat-file store
+ * (`/api/projects`, `/api/templates`, `/api/connections`, `/api/backlog`) fail
+ * `500`. "The product is up but the Gateway is down" is a genuinely different
+ * state from "the product is down" — different owner, different fix — and
+ * flattening both into "unreachable" throws away the only signal that tells them
+ * apart. A subclass rather than a flag, so a caller can branch on the type and
+ * every existing `catch (ProductError)` still catches it.
+ *
+ * Unreachability is a third state again, and stays on `ProductError` proper:
+ * nothing answered at all, so there is no upstream to blame.
+ */
+export class ProductUpstreamError extends ProductError {}
+
+/** Statuses that mean the responder failed on behalf of something further up. */
+const UPSTREAM_STATUSES = new Set([502, 503, 504]);
+
 export type RequestOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -53,9 +74,15 @@ export async function getJson<T>(
 
   if (!response.ok) {
     const body = (await response.text().catch(() => "")).slice(0, 400);
-    throw new ProductError(
-      `${url} returned ${response.status} ${response.statusText}${body ? `: ${body}` : ""}`,
-    );
+    const detail = `${url} returned ${response.status} ${response.statusText}${body ? `: ${body}` : ""}`;
+    if (UPSTREAM_STATUSES.has(response.status)) {
+      throw new ProductUpstreamError(
+        `${detail}. The product is running and answered this request; the upstream ` +
+          `it proxies — the OpenClaw Gateway — is what failed. Check the Gateway, ` +
+          `not the product at host=${config.sources.host} port=${config.sources.port}.`,
+      );
+    }
+    throw new ProductError(detail);
   }
 
   try {

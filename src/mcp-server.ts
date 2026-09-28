@@ -16,16 +16,36 @@ import {
   ListToolsRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { RequestOptions } from "./client.js";
 import { loadConfig, type Config } from "./config.js";
 import { SERVER_NAME, SERVER_VERSION } from "./names.js";
 import { getProject } from "./verbs/get-project.js";
-import {
-  DEFAULT_LIMIT,
-  MAX_LIMIT,
-  listProjects,
-} from "./verbs/list-projects.js";
+import { listAgents } from "./verbs/list-agents.js";
+import { listProjects } from "./verbs/list-projects.js";
+import { DEFAULT_LIMIT, MAX_LIMIT } from "./verbs/paging.js";
 
 export { SERVER_NAME, SERVER_VERSION };
+
+/**
+ * Every list verb takes the same two paging arguments, described the same way.
+ * Written once so the descriptions cannot drift apart per verb, the same reason
+ * the arithmetic behind them lives once in `paging.ts`.
+ */
+const pagingSchema = (noun: string) => ({
+  limit: {
+    type: "integer" as const,
+    minimum: 1,
+    maximum: MAX_LIMIT,
+    default: DEFAULT_LIMIT,
+    description: `Maximum ${noun} to return (1-${MAX_LIMIT}).`,
+  },
+  offset: {
+    type: "integer" as const,
+    minimum: 0,
+    default: 0,
+    description: `${noun[0].toUpperCase()}${noun.slice(1)} to skip, for paging through a truncated result.`,
+  },
+});
 
 export const TOOLS: Tool[] = [
   {
@@ -39,19 +59,7 @@ export const TOOLS: Tool[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        limit: {
-          type: "integer",
-          minimum: 1,
-          maximum: MAX_LIMIT,
-          default: DEFAULT_LIMIT,
-          description: `Maximum projects to return (1-${MAX_LIMIT}).`,
-        },
-        offset: {
-          type: "integer",
-          minimum: 0,
-          default: 0,
-          description: "Projects to skip, for paging through a truncated result.",
-        },
+        ...pagingSchema("projects"),
         agent_id: {
           type: "string",
           description:
@@ -79,6 +87,30 @@ export const TOOLS: Tool[] = [
       },
     },
   },
+  {
+    name: "list_agents",
+    description:
+      "List agents on the SingleIntent roster, each with its onboarding status. " +
+      "Set project_id to keep only that project's members; the filter runs here, " +
+      "not on the server, and reads membership from the same source as " +
+      "get_project so the two cannot disagree. Ids the project lists that the " +
+      "roster does not have come back in missingFromRoster rather than being " +
+      "dropped silently. Note createdAt is epoch milliseconds here, unlike the " +
+      "ISO-8601 string list_projects and get_project return.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        ...pagingSchema("agents"),
+        project_id: {
+          type: "string",
+          description:
+            "Keep only agents belonging to this project, by UUID. When set, " +
+            "total counts the matching agents, not the whole roster.",
+        },
+      },
+    },
+  },
 ];
 
 /**
@@ -94,36 +126,50 @@ export function createServer(config: Config): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
+  /**
+   * Arguments cross the wire in the snake_case of the tool schemas; the verb
+   * modules speak camelCase. That mapping is the only thing each entry does, so
+   * a table keeps it visible as a table instead of hiding it in a chain of ifs
+   * that grows a branch per verb.
+   */
+  const handlers: Record<
+    string,
+    (args: Record<string, unknown>, options: RequestOptions) => Promise<unknown>
+  > = {
+    list_projects: (args, options) =>
+      listProjects(
+        config,
+        {
+          limit: args.limit as number | undefined,
+          offset: args.offset as number | undefined,
+          agentId: args.agent_id,
+        },
+        options,
+      ),
+    get_project: (args, options) => getProject(config, { projectId: args.project_id }, options),
+    list_agents: (args, options) =>
+      listAgents(
+        config,
+        {
+          limit: args.limit as number | undefined,
+          offset: args.offset as number | undefined,
+          projectId: args.project_id,
+        },
+        options,
+      ),
+  };
+
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     try {
-      // Arguments cross the wire in the snake_case of the verb names; the verb
-      // modules speak camelCase. The mapping lives here so it happens once.
-      if (request.params.name === "list_projects") {
-        const result = await listProjects(
-          config,
-          {
-            limit: args.limit as number | undefined,
-            offset: args.offset as number | undefined,
-            agentId: args.agent_id,
-          },
-          { signal: extra?.signal },
-        );
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        };
+      const handler = handlers[request.params.name];
+      if (handler === undefined) {
+        throw new Error(`unknown tool: ${request.params.name}`);
       }
-      if (request.params.name === "get_project") {
-        const result = await getProject(
-          config,
-          { projectId: args.project_id },
-          { signal: extra?.signal },
-        );
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        };
-      }
-      throw new Error(`unknown tool: ${request.params.name}`);
+      const result = await handler(args, { signal: extra?.signal });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
     } catch (error) {
       // isError keeps a product outage or a misconfiguration legible to the
       // agent as a tool failure, rather than surfacing as a protocol error.
