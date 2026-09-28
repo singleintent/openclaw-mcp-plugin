@@ -1,16 +1,16 @@
 {
-  "name": "@singleinstinct/openclaw-mcp-plugin",
+  "name": "@singleintent/openclaw-mcp-plugin",
   "version": "0.1.0",
-  "description": "SingleInstinct MCP server for OpenClaw, declared as a plugin-owned stdio MCP server.",
+  "description": "SingleIntent MCP server for OpenClaw, declared as a plugin-owned stdio MCP server.",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/singleinstinct/openclaw-mcp-plugin.git"
+    "url": "git+https://github.com/singleintent/openclaw-mcp-plugin.git"
   },
-  "homepage": "https://github.com/singleinstinct/openclaw-mcp-plugin#readme",
+  "homepage": "https://github.com/singleintent/openclaw-mcp-plugin#readme",
   "bugs": {
-    "url": "https://github.com/singleinstinct/openclaw-mcp-plugin/issues"
+    "url": "https://github.com/singleintent/openclaw-mcp-plugin/issues"
   },
   "engines": {
     "node": ">=20.19.0"
@@ -56,7 +56,7 @@
       "pluginApi": ">=2026.9.5"
     },
     "install": {
-      "npmSpec": "@singleinstinct/openclaw-mcp-plugin",
+      "npmSpec": "@singleintent/openclaw-mcp-plugin",
       "minHostVersion": ">=2026.9.5"
     }
   }

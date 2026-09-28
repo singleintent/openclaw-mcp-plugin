@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * SingleInstinct MCP server (stdio).
+ * SingleIntent MCP server (stdio).
  *
  * OpenClaw launches this process because `openclaw.plugin.json` declares it under
- * `mcpServers.singleinstinct`. That manifest key — not the plugin `id` — is what
- * OpenClaw uses to prefix the tools it discovers here, as `singleinstinct__<verb>`.
+ * `mcpServers.singleintent`. That manifest key — not the plugin `id` — is what
+ * OpenClaw uses to prefix the tools it discovers here, as `singleintent__<verb>`.
  *
  * The verb surface is deliberately empty. The `tools` capability is wired and
  * `tools/list` answers with an empty array, so the handshake proves the packaged
@@ -20,8 +20,8 @@ import {
 /** Kept in step with package.json by src/mcp-server.test.ts. */
 export const SERVER_VERSION = "0.1.0";
 
-/** Matches `mcpServers.singleinstinct` in openclaw.plugin.json. */
-export const SERVER_NAME = "singleinstinct";
+/** Matches `mcpServers.singleintent` in openclaw.plugin.json. */
+export const SERVER_NAME = "singleintent";
 
 /** Verb surface, pending specification. */
 export const TOOLS: Tool[] = [];
@@ -48,8 +48,8 @@ export async function main(): Promise<void> {
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error: unknown) => {
     // stdout carries the MCP framing; diagnostics must go to stderr, where
-    // OpenClaw logs them with a `bundle-mcp:singleinstinct:` prefix.
-    console.error("singleinstinct mcp server failed to start:", error);
+    // OpenClaw logs them with a `bundle-mcp:singleintent:` prefix.
+    console.error("singleintent mcp server failed to start:", error);
     process.exit(1);
   });
 }

@@ -70,7 +70,7 @@ describe("built server answers a real MCP handshake", () => {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: { tools: {} },
       // The name OpenClaw prefixes discovered tools with.
-      serverInfo: { name: "singleinstinct", version: "0.1.0" },
+      serverInfo: { name: "singleintent", version: "0.1.0" },
     });
 
     const listTools = responses.find((r) => r.id === 2);

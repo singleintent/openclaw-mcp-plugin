@@ -2,7 +2,7 @@
  * Plugin runtime entry.
  *
  * This plugin registers no tools here on purpose. Its surface is the stdio MCP
- * server declared in `openclaw.plugin.json` under `mcpServers.singleinstinct`,
+ * server declared in `openclaw.plugin.json` under `mcpServers.singleintent`,
  * which OpenClaw merges into the `bundle-mcp` namespace that the default
  * `coding` and `messaging` tool profiles already admit. Registering tools
  * through `api.registerTool` instead would scope them under this plugin id and
@@ -17,9 +17,9 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 export default definePluginEntry({
   // Must equal the manifest `id`.
-  id: "singleinstinct",
-  name: "SingleInstinct",
-  description: "SingleInstinct MCP server for OpenClaw.",
+  id: "singleintent",
+  name: "SingleIntent",
+  description: "SingleIntent MCP server for OpenClaw.",
   register() {
     // Intentionally empty; see the module comment.
   },

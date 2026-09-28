@@ -1,6 +1,6 @@
-# SingleInstinct OpenClaw MCP plugin
+# SingleIntent OpenClaw MCP plugin
 
-An OpenClaw plugin that ships the SingleInstinct MCP server as a plugin-owned
+An OpenClaw plugin that ships the SingleIntent MCP server as a plugin-owned
 stdio process.
 
 **Status: scaffold.** The verb surface is not yet specified, so the server
@@ -13,20 +13,20 @@ Three strings matter, and two of them are easy to conflate:
 
 | String                                | Value                                 | What it controls                                        |
 | ------------------------------------- | ------------------------------------- | ------------------------------------------------------- |
-| Manifest `id`                         | `singleinstinct`                      | The `plugins.entries.<id>` config key                   |
-| `mcpServers` key                      | `singleinstinct`                      | The tool prefix, and the `mcp.servers.<name>` override key |
-| npm package                           | `@singleinstinct/openclaw-mcp-plugin` | What consumers install                                  |
+| Manifest `id`                         | `singleintent`                      | The `plugins.entries.<id>` config key                   |
+| `mcpServers` key                      | `singleintent`                      | The tool prefix, and the `mcp.servers.<name>` override key |
+| npm package                           | `@singleintent/openclaw-mcp-plugin` | What consumers install                                  |
 
 The manifest `id` and the `mcpServers` key are **independent strings**. They are
 set equal here as a deliberate choice, not because OpenClaw requires it;
 `src/mcp-server.test.ts` fails if they drift apart. Tools discovered from this
-server are named `singleinstinct__<verb>` — note the prefix is the `mcpServers`
+server are named `singleintent__<verb>` — note the prefix is the `mcpServers`
 key, and there is no `mcp__` prefix. (`mcp__<server>__<tool>` is Claude Code's
 harness convention, not OpenClaw's.)
 
 The prefix is sanitized before use: characters outside `[A-Za-z0-9_-]` become
 `-`, a name not starting with a letter gets an `mcp-` prefix, and long or
-duplicate prefixes may be truncated or suffixed. `singleinstinct` is unchanged by
+duplicate prefixes may be truncated or suffixed. `singleintent` is unchanged by
 all three rules, which is the reason for the single lowercase token.
 
 ## Install
@@ -35,14 +35,14 @@ Installing is two steps on purpose. Run it **without** the flag first to read th
 capabilities the plugin declares:
 
 ```bash
-openclaw plugins install @singleinstinct/openclaw-mcp-plugin
+openclaw plugins install @singleintent/openclaw-mcp-plugin
 ```
 
 That stops at a consent gate and installs nothing. Once you have read the
 capability list, accept it:
 
 ```bash
-openclaw plugins install @singleinstinct/openclaw-mcp-plugin --accept-capabilities
+openclaw plugins install @singleintent/openclaw-mcp-plugin --accept-capabilities
 ```
 
 Installing from a local path or any non-ClawHub source hits a **second, separate**
@@ -77,7 +77,7 @@ built-in tools is the symptom to watch for.
 
 > **If `openclaw mcp list` shows nothing, the install has not failed.** That
 > command cannot see this plugin and never will. Run
-> `openclaw plugins inspect singleinstinct` instead.
+> `openclaw plugins inspect singleintent` instead.
 
 **Three commands that look right and cannot verify this plugin.** All three
 report success or silence whether or not the plugin works:
@@ -94,11 +94,11 @@ install failed. Use these instead.
 **1. Is the server declared and enabled?**
 
 ```bash
-openclaw plugins inspect singleinstinct
+openclaw plugins inspect singleintent
 ```
 
 Look for `Status: enabled` and an `MCP servers:` section listing
-`singleinstinct`. This reads the manifest, so it proves declaration and
+`singleintent`. This reads the manifest, so it proves declaration and
 enablement — not that the server process runs.
 
 **2. Does the server actually run?**
@@ -117,12 +117,12 @@ printf '%s\n%s\n%s\n' \
 Expected, from the plugin's install path:
 
 ```json
-{"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleinstinct","version":"0.1.0"}},"jsonrpc":"2.0","id":1}
+{"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.0"}},"jsonrpc":"2.0","id":1}
 {"result":{"tools":[]},"jsonrpc":"2.0","id":2}
 ```
 
 `"tools":[]` is correct at this stage, not a failure. Until the verb surface
-lands, **no `singleinstinct__*` tools will appear in any tool list** — so absence
+lands, **no `singleintent__*` tools will appear in any tool list** — so absence
 of tools is not evidence of a broken install. The `serverInfo.name` in the first
 response is the string OpenClaw will prefix verbs with.
 
@@ -130,7 +130,7 @@ response is the string OpenClaw will prefix verbs with.
 
 **3. Server started but misbehaving?**
 
-Diagnostics go to stderr, which OpenClaw logs with a `bundle-mcp:singleinstinct:`
+Diagnostics go to stderr, which OpenClaw logs with a `bundle-mcp:singleintent:`
 prefix:
 
 ```bash

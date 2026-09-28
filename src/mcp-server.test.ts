@@ -40,9 +40,14 @@ describe("manifest and server agree", () => {
     });
   });
 
-  it("names no string containing the retired code name", () => {
-    expect(JSON.stringify({ pkg, manifest })).not.toMatch(/joy.?labs/i);
-  });
+  // Two retired names now: the original code name, and the brand this repo
+  // launched under before the org was renamed to singleintent.
+  it.each([/joy.?labs/i, /singleinstinct/i])(
+    "names no string matching the retired name %s",
+    (retired) => {
+      expect(JSON.stringify({ pkg, manifest })).not.toMatch(retired);
+    },
+  );
 });
 
 describe("server construction", () => {

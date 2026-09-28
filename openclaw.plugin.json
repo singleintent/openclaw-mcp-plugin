@@ -1,7 +1,7 @@
 {
-  "id": "singleinstinct",
-  "name": "SingleInstinct",
-  "description": "SingleInstinct MCP server for OpenClaw.",
+  "id": "singleintent",
+  "name": "SingleIntent",
+  "description": "SingleIntent MCP server for OpenClaw.",
   "version": "0.1.0",
   "activation": {
     "onStartup": true
@@ -12,7 +12,7 @@
     "properties": {}
   },
   "mcpServers": {
-    "singleinstinct": {
+    "singleintent": {
       "transport": "stdio",
       "command": "node",
       "args": ["./dist/mcp-server.js"]
