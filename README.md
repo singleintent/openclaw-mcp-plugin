@@ -48,6 +48,37 @@ definition declares. The cost of that is real: SecretRef support covers only
 `plugins.entries.<id>.config`, so it is unavailable here. `SINGLEINTENT_TOKEN_FILE`
 is the mitigation, and it is weaker.
 
+An alternative was tested and rejected: having the plugin entry, which *can* read
+plugin config, resolve it at activation and write it to a file the subprocess
+reads. It fails because the subprocess has no profile identity, so `$HOME` is the
+only path both sides can derive — and two OpenClaw profiles would then write and
+read the *same* file, clobbering each other with the child unable to tell which
+config it holds.
+
+The distinction that makes the config file above safe where that bridge is not:
+**a human-written config file has one writer and one intent.** The bridge has one
+writer per profile, racing. Identical file location, completely different safety
+properties.
+
+### Known-unverified behaviour
+
+Two things this plugin's design leans on are characterised but **not proven**,
+and are recorded here rather than asserted:
+
+- **Manifest MCP servers appear to spawn lazily**, so the plugin entry runs
+  first. This rests on the subprocess being *absent* while an idle Gateway was
+  fully started — not on an observed spawn.
+- **Whether a running subprocess is restarted when config changes is unverified.**
+  No spawn could be forced without model credentials. `openclaw mcp reload`
+  exists to dispose cached MCP runtimes, which suggests a running child does not
+  pick up changes by itself. If configuration appears not to take effect, restart
+  the Gateway rather than assuming the file was wrong.
+
+Related, for anyone extending the plugin entry: **`register()` is called
+repeatedly — seven times in one observed Gateway start — and the first call
+arrives with plugin config absent.** Anything reading plugin config there must
+tolerate being called with none, or it will act on empty config intermittently.
+
 ## Verbs
 
 ### `list_projects`
