@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { SERVER_NAME, createServer } from "./mcp-server.js";
+import { loadConfig } from "./config.js";
+import { SERVER_NAME, TOOLS, createServer } from "./mcp-server.js";
 
 const readJson = (relative: string): Record<string, unknown> =>
   JSON.parse(
@@ -36,6 +37,16 @@ describe("manifest wiring", () => {
 
 describe("server construction", () => {
   it("builds without a transport", () => {
-    expect(createServer()).toBeDefined();
+    expect(createServer(loadConfig({}))).toBeDefined();
+  });
+
+  it("advertises every verb with an input schema", () => {
+    expect(TOOLS.length).toBeGreaterThan(0);
+    for (const tool of TOOLS) {
+      expect(tool.inputSchema).toMatchObject({ type: "object" });
+      // additionalProperties:false keeps a typo in an argument name an error
+      // rather than a silently ignored field.
+      expect(tool.inputSchema).toMatchObject({ additionalProperties: false });
+    }
   });
 });

@@ -3,9 +3,69 @@
 An OpenClaw plugin that ships the SingleIntent MCP server as a plugin-owned
 stdio process.
 
-**Status: scaffold.** The verb surface is not yet specified, so the server
-registers no tools. It completes a full MCP handshake and answers `tools/list`
-with an empty array. Everything below is verified against OpenClaw 2026.9.5.
+**Status: early.** One verb, `list_projects`. Everything below is verified
+against OpenClaw 2026.9.5 and a running product.
+
+## Configuration
+
+The server resolves its own configuration. Precedence, highest first:
+
+1. **Environment variables** — the manifest supplies `HOST` and `PORT` defaults
+2. **A config file** — `$SINGLEINTENT_CONFIG`, else `$HOME/.singleintent/config.json`
+3. **Built-in defaults**
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SINGLEINTENT_HOST` | `127.0.0.1` | Product host |
+| `SINGLEINTENT_PORT` | `5173` | Product port |
+| `SINGLEINTENT_CONFIG` | — | Config file path override |
+| `SINGLEINTENT_TOKEN` | unset | Auth token; no header is sent while unset |
+| `SINGLEINTENT_TOKEN_FILE` | unset | Path to a token, keeping the secret out of config |
+
+The config file takes `host`, `port` and `token`. An absent file is normal.
+Malformed JSON, a non-object file, an out-of-range port, or an unreadable or
+empty token file all **fail loudly** rather than falling back to defaults and
+appearing to work against the wrong host.
+
+Loopback is the *default*, not a fixed value. Both host and port are
+overridable: `5173` is Vite's default dev port, so it collides on developer
+machines, and a stale process squatting it will serve a stale build.
+
+> **Do not configure this plugin by editing `mcp.servers.singleintent`.** That
+> override **replaces** the manifest definition rather than merging with it, so
+> setting only `env` there drops `command` and OpenClaw skips the server
+> entirely — `[bundle-mcp] skipped server "singleintent" because its command is
+> missing and its url is missing`. It is silent from your side. If you do need
+> it, restate `transport`, `command` and `args` in full.
+
+### Why not `plugins.entries.singleintent.config`?
+
+Because a stdio subprocess cannot read it. Manifest `env` takes no templating,
+the only runtime MCP hook resolves `url`/`headers` for HTTP transports, and the
+child does not inherit the Gateway environment — it receives `HOME`, `LOGNAME`,
+`PATH`, `SHELL`, `USER` and `__CF_USER_TEXT_ENCODING`, plus whatever the server
+definition declares. The cost of that is real: SecretRef support covers only
+`plugins.entries.<id>.config`, so it is unavailable here. `SINGLEINTENT_TOKEN_FILE`
+is the mitigation, and it is weaker.
+
+## Verbs
+
+### `list_projects`
+
+Returns `id`, `name`, `workingDirectory` and `agentCount` per project, with
+`total` and `truncated`. Takes `limit` (1–200, default 50) and `offset`.
+
+```json
+{ "projects": [{ "id": "0bef…", "name": "mob2", "workingDirectory": "/Users/…/mob2", "agentCount": 3 }],
+  "total": 11, "truncated": true }
+```
+
+**`agentCount` replaces the product's `agentIds` array deliberately.** Bounded
+scalars pass through; unbounded collections become counts. That array is what
+grows as the product grows, and an agent choosing what to do next needs to know
+which projects exist and how big they are, not every member id. On live data the
+projection is 45% smaller than the raw response. Ask the agents verb for
+identities.
 
 ## Names
 
@@ -118,13 +178,23 @@ Expected, from the plugin's install path:
 
 ```json
 {"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.0"}},"jsonrpc":"2.0","id":1}
-{"result":{"tools":[]},"jsonrpc":"2.0","id":2}
+{"result":{"tools":[{"name":"list_projects", ...}]},"jsonrpc":"2.0","id":2}
 ```
 
-`"tools":[]` is correct at this stage, not a failure. Until the verb surface
-lands, **no `singleintent__*` tools will appear in any tool list** — so absence
-of tools is not evidence of a broken install. The `serverInfo.name` in the first
-response is the string OpenClaw will prefix verbs with.
+The `serverInfo.name` in the first response is the string OpenClaw prefixes
+verbs with, so the tool reaching an agent is `singleintent__list_projects`.
+
+This handshake proves the packaged code runs; it does not reach the product. To
+check the transport too, call the verb — replace the `tools/list` line with:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_projects","arguments":{"limit":3}}}
+```
+
+A result with `"isError": true` naming an unreachable URL means the plugin works
+and the **product** is not answering on the configured host and port. The message
+reports which source supplied each value, so `port=SINGLEINTENT_PORT` tells you
+the override was read and `port=default` tells you it was not.
 
 `npm test` runs this same handshake against `dist/` as an automated test.
 
