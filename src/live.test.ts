@@ -8,6 +8,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { ProductError } from "./client.js";
 import { baseUrl, loadConfig } from "./config.js";
+import { getBacklog } from "./verbs/get-backlog.js";
 import { ProjectNotFoundError, getProject } from "./verbs/get-project.js";
 import { listAgents } from "./verbs/list-agents.js";
 import { listConnections } from "./verbs/list-connections.js";
@@ -176,6 +177,21 @@ describe("live product", () => {
       // Nothing was dropped, so every stored field is here.
       expect(Object.keys(connection).sort()).toEqual(["establishedAt", "from", "id", "to"]);
     }
+  }, 20_000);
+
+  it("reads the real backlog with its descriptions intact", async () => {
+    if (!reachable) return;
+    const result = await getBacklog(config, { limit: 200 });
+
+    expect(result.total).toBeGreaterThan(0);
+    for (const backlogItem of result.items) {
+      expect(backlogItem.id.length).toBeGreaterThan(0);
+      expect(backlogItem).toHaveProperty("description");
+    }
+    // The field list_templates would have cut must really be here, with text in it.
+    expect(
+      result.items.some((backlogItem) => (backlogItem.description ?? "").length > 0),
+    ).toBe(true);
   }, 20_000);
 
   it("rejects a project id the product could never have minted", async () => {

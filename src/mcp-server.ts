@@ -19,6 +19,7 @@ import {
 import type { RequestOptions } from "./client.js";
 import { loadConfig, type Config } from "./config.js";
 import { SERVER_NAME, SERVER_VERSION } from "./names.js";
+import { getBacklog } from "./verbs/get-backlog.js";
 import { getProject } from "./verbs/get-project.js";
 import { listAgents } from "./verbs/list-agents.js";
 import { listConnections } from "./verbs/list-connections.js";
@@ -140,6 +141,19 @@ export const TOOLS: Tool[] = [
       properties: { ...pagingSchema("connections") },
     },
   },
+  {
+    name: "get_backlog",
+    description:
+      "Read the shared backlog: id, title, description, status, owner and " +
+      "timestamps per item. Read-only by design — the file is written only by " +
+      "agents through their own file tools, with no locking, so a second writer " +
+      "would lose items. A stale read is expected, not an error.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { ...pagingSchema("items") },
+    },
+  },
 ];
 
 /**
@@ -183,6 +197,15 @@ export function createServer(config: Config): Server {
           limit: args.limit as number | undefined,
           offset: args.offset as number | undefined,
           projectId: args.project_id,
+        },
+        options,
+      ),
+    get_backlog: (args, options) =>
+      getBacklog(
+        config,
+        {
+          limit: args.limit as number | undefined,
+          offset: args.offset as number | undefined,
         },
         options,
       ),
