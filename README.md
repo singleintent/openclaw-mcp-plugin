@@ -342,11 +342,13 @@ already truncated server-side and is not re-truncated here.
 
 ## Errors, and the distinction worth keeping
 
-| Situation | Type | What it means |
-| --- | --- | --- |
-| Nothing answered | `ProductError` — "cannot reach the product at `<url>`" plus host and port provenance | The product is not running, or host/port are wrong |
-| `502`/`503`/`504` | `ProductUpstreamError` | The product **is** running and answered; the OpenClaw Gateway it proxies is what failed |
-| `500` | `ProductError` | The product's own flat-file store failed |
+| Situation | Type | Site link | What it means |
+| --- | --- | --- | --- |
+| Nothing answered | `ProductError` — "cannot reach the product at `<url>`" plus host and port provenance | **yes** | The product is not running, is not installed, or host/port are wrong |
+| `502`/`503`/`504` | `ProductUpstreamError` | no | The product **is** running and answered; the OpenClaw Gateway it proxies is what failed |
+| `500` | `ProductError` | no | The product's own flat-file store failed |
+| Non-2xx otherwise | `ProductError` | no | The product is running and refused the request |
+| `200` that is not JSON | `ProductError` | no | Something answered on that port, but it is not this product |
 
 The product splits its own failures this way: Gateway-backed routes
 (`/api/agents`, `/api/activity`) fail `502`, store-backed routes
@@ -356,6 +358,35 @@ different owner than "the product is down", and flattening both into
 "unreachable" throws away the only signal that tells them apart.
 `ProductUpstreamError` is a subclass of `ProductError`, so existing handling
 still catches it.
+
+### Why only the first row carries a link to the product
+
+The install story is two artifacts: this plugin from the store, the product
+downloaded separately. So **"plugin installed, product not running" is the normal
+first state**, not an edge case, and an error that only names an unreachable
+loopback port is a precise diagnostic for someone who already has the product and
+a dead end for someone who does not. That row's message ends with
+`https://singleintent.com` and the note that the plugin and the product are
+separate downloads.
+
+Every other row had the product *answer*, which settles the question of whether
+the caller has it. Sending those callers to a download page would be confidently
+wrong advice about the wrong component — a Gateway outage is not fixed by
+reinstalling the product. The absence of the link on those rows is asserted in
+`src/client.test.ts`, because it is the kind of thing that regresses without
+anyone noticing: the message would still read as helpful.
+
+The URL is held once, as `PRODUCT_SITE_URL` in `src/client.ts`, and a test scans
+the shipped sources to keep it to one copy. It is the apex with no path: verified
+2026-09-28, the root returns `200` while `/install`, `/download`, `/get-started`
+and `/docs` all `404`, and `www` resolves to the same addresses but its TLS
+certificate does not cover the name. A guessed path would put a dead link inside
+an error message.
+
+> **Known gap.** There is no install or download page at that domain yet — the
+> root serves a placeholder. The link is honest but does not yet complete the
+> journey. `PRODUCT_SITE_URL` is the single place to re-point when a real page
+> exists.
 
 ## Paging
 
