@@ -99,11 +99,16 @@ Returns `id`, `name`, `workingDirectory` and `agentCount` per project, with
   "total": 11, "truncated": true }
 ```
 
-**`agentCount` replaces the product's `agentIds` array deliberately.** Bounded
-scalars pass through; unbounded collections become counts. That array is what
-grows as the product grows, and an agent choosing what to do next needs to know
-which projects exist and how big they are, not every member id. On live data the
-projection is 45% smaller than the raw response.
+> **The shaping rule, which governs every list verb: bounded scalars pass
+> through; unbounded collections do not, and are replaced by a count.**
+
+This is a rule rather than a judgement call, so that `get_project` and every later
+list verb can be argued against it instead of re-litigating field by field.
+
+**`agentCount` replaces the product's `agentIds` array** under that rule. The
+array is what grows as the product grows, and an agent choosing what to do next
+needs to know which projects exist and how big they are, not every member id. On
+live data the projection is 45% smaller than the raw response.
 
 `workingDirectory` is kept for the opposite reason: it is identity, not payload.
 `name` alone is ambiguous across similarly-named projects; the path is what maps a
