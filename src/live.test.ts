@@ -8,6 +8,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { ProductError } from "./client.js";
 import { baseUrl, loadConfig } from "./config.js";
+import { ProjectNotFoundError, getProject } from "./verbs/get-project.js";
 import { listProjects } from "./verbs/list-projects.js";
 
 const config = loadConfig({});
@@ -58,5 +59,47 @@ describe("live product", () => {
     const wrong = { ...config, port: 1 };
     await expect(listProjects(wrong)).rejects.toThrow(ProductError);
     await expect(listProjects(wrong)).rejects.toThrow(/cannot reach the product at http:/);
+  }, 20_000);
+
+  it("returns the full agentIds for one real project", async () => {
+    if (!reachable) return;
+    // Take the id from the list verb, which is how a caller reaches this verb.
+    const listed = await listProjects(config, { limit: 200 });
+    const withAgents = listed.projects.find((project) => project.agentCount > 0);
+    if (withAgents === undefined) return; // No populated project to detail.
+
+    const { project } = await getProject(config, { projectId: withAgents.id });
+    expect(project.id).toBe(withAgents.id);
+    // The count and the array must agree, or one of the two verbs is lying.
+    expect(project.agentIds).toHaveLength(withAgents.agentCount);
+    expect(project).toHaveProperty("createdAt");
+  }, 20_000);
+
+  it("filters the list by agent, and keeps total meaning the filtered count", async () => {
+    if (!reachable) return;
+    const all = await listProjects(config, { limit: 200 });
+    const seed = all.projects.find((project) => project.agentCount > 0);
+    if (seed === undefined) return;
+    const { project } = await getProject(config, { projectId: seed.id });
+    const agentId = project.agentIds[0];
+    if (agentId === undefined) return;
+
+    const filtered = await listProjects(config, { agentId, limit: 200 });
+    expect(filtered.total).toBeGreaterThan(0);
+    expect(filtered.total).toBeLessThanOrEqual(all.total);
+    expect(filtered.projects.map((p) => p.id)).toContain(seed.id);
+    // The filtered shape is the unfiltered shape: same keys, fewer rows.
+    expect(Object.keys(filtered).sort()).toEqual(Object.keys(all).sort());
+  }, 20_000);
+
+  it("fails a well-formed unknown id as a not-found, not as an outage", async () => {
+    if (!reachable) return;
+    const missing = "00000000-0000-4000-8000-000000000000";
+    await expect(getProject(config, { projectId: missing })).rejects.toThrow(
+      ProjectNotFoundError,
+    );
+    await expect(getProject(config, { projectId: missing })).rejects.toThrow(
+      new RegExp(`no project with id ${missing}`),
+    );
   }, 20_000);
 });

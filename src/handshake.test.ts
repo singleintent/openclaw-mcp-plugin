@@ -75,6 +75,6 @@ describe("built server answers a real MCP handshake", () => {
 
     const listTools = responses.find((r) => r.id === 2);
     const tools = (listTools?.result as { tools?: { name?: string }[] })?.tools ?? [];
-    expect(tools.map((t) => t.name)).toEqual(["list_projects"]);
+    expect(tools.map((t) => t.name)).toEqual(["list_projects", "get_project"]);
   }, 30_000);
 });

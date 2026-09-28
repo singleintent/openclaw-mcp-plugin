@@ -3,8 +3,8 @@
 An OpenClaw plugin that ships the SingleIntent MCP server as a plugin-owned
 stdio process.
 
-**Status: early.** One verb, `list_projects`. Everything below is verified
-against OpenClaw 2026.9.5 and a running product.
+**Status: early.** Two verbs, `list_projects` and `get_project`. Everything below
+is verified against OpenClaw 2026.9.5 and a running product.
 
 ## Configuration
 
@@ -92,7 +92,8 @@ tolerate being called with none, or it will act on empty config intermittently.
 ### `list_projects`
 
 Returns `id`, `name`, `workingDirectory` and `agentCount` per project, with
-`total` and `truncated`. Takes `limit` (1–200, default 50) and `offset`.
+`total` and `truncated`. Takes `limit` (1–200, default 50), `offset`, and an
+optional `agent_id` filter.
 
 ```json
 { "projects": [{ "id": "0bef…", "name": "mob2", "workingDirectory": "/Users/…/mob2", "agentCount": 3 }],
@@ -101,9 +102,12 @@ Returns `id`, `name`, `workingDirectory` and `agentCount` per project, with
 
 > **The shaping rule, which governs every list verb: bounded scalars pass
 > through; unbounded collections do not, and are replaced by a count.**
+>
+> **And the boundary it implies: a list verb carries identity plus size; a detail
+> verb carries the whole record.**
 
-This is a rule rather than a judgement call, so that `get_project` and every later
-list verb can be argued against it instead of re-litigating field by field.
+These are rules rather than judgement calls, so that every later verb can be
+argued against them instead of re-litigating field by field.
 
 **`agentCount` replaces the product's `agentIds` array** under that rule. The
 array is what grows as the product grows, and an agent choosing what to do next
@@ -117,14 +121,97 @@ project to a checkout, and it is how a person actually recognises one.
 **What this projection cannot answer, and the obligation that follows.** "Which
 project is this agent in?" is a real question, and a response carrying only
 `agentCount` cannot answer it. Dropping `agentIds` therefore makes a detail verb
-**required, not optional** — `get_project`, returning the full `agentIds` for one
-project, is the next verb.
+**required, not optional** — hence `get_project` below.
 
-This is deliberately *not* solved by adding a field-selector parameter to
-`list_projects`. A summary verb plus a detail verb is the simpler contract and the
-one consumers already expect; a selector makes every response shape conditional on
-arguments, which is harder to document, harder to cache, and harder to reason
-about at the call site.
+#### `agent_id` — the reverse lookup
+
+`get_project` alone does **not** answer the question above, which is worth stating
+because it is easy to assume it does. `get_project` answers "who is in project X",
+and needs X up front. The reverse lookup is a different question whose answer is a
+**list**: on live data `travel-agent` belongs to both `mob2` and `Personal`, so no
+verb keyed on a single project can answer it.
+
+`agent_id` is that lookup. When set, only projects whose `agentIds` contains it
+are returned:
+
+```json
+{ "projects": [{ "id": "1634…", "name": "mob2", … }, { "id": "1b0c…", "name": "Personal", … }],
+  "total": 2, "truncated": false }
+```
+
+> **`total` counts the matching projects, not every project that exists.** The
+> unfiltered call above reports `total: 12` against the same data. Reading a
+> filtered `total` as an inventory is the wrong assumption to make here.
+
+**Why a filter and not a field selector, and not a third verb.** A selector
+changes *which fields* come back, so the response shape becomes conditional on
+arguments — harder to document, harder to cache, harder to reason about at the
+call site. A filter changes *which rows*, and the shape is byte-identical whether
+it is set or not. A third verb was rejected for the opposite reason: "which
+projects contain agent X" is answered by a list of project summaries, which is
+exactly what this verb already returns, so a third one would be the redundancy.
+
+Filtering happens **before** paging. The other order would page an unfiltered list
+and then thin the page, giving short pages and a `total` no amount of paging could
+reach.
+
+A malformed `agent_id` is rejected rather than passed through, because a
+structurally impossible id would match nothing and return an empty list that reads
+as a real answer. A *well-formed* id matching no project returns empty, because
+that is the truthful answer.
+
+### `get_project`
+
+The detail verb the projection above made necessary. Takes a required
+`project_id` and returns the whole record — `agentIds` in full, plus `createdAt`,
+which the summary drops for signal-per-byte and which a detail verb has no reason
+to withhold.
+
+```json
+{ "project": { "id": "1634…", "name": "mob2", "workingDirectory": "/Users/…/mob2",
+               "agentIds": ["mob2-eng-manager", "mob2-uiux-expert", "travel-agent"],
+               "createdAt": "2026-09-17T20:38:08.052Z" } }
+```
+
+The response is wrapped in `project` rather than returned flat, so a sibling field
+can be added later without changing a shape consumers depend on — the same
+reasoning that put `total` and `truncated` alongside `projects`.
+
+`agentIds` is passed through uncapped. It is the reason the verb exists, so
+counting it here would leave the question unanswered again. If it ever needs
+paging, that is a separate verb rather than a shape conditional on arguments.
+
+**This selects from the list route; it does not fetch a detail route.** There is
+no detail route to fetch: the product matches `/api/projects` for GET and POST
+only, and `GET /api/projects/<uuid>` answers **404**. (`lib/joylabs-projects.js`
+does export `getProject(id)`, but it is internal and never routed.) So the one
+round trip goes to `/api/projects` and the selection happens in the plugin. If a
+detail route lands later the swap is confined to `getProject()` in
+`src/verbs/get-project.ts`, which says so in a comment.
+
+> **Why a retired name appears in current code, and the break it sets up.**
+> `lib/joylabs-projects.js` and `lib/joylabs-ids.js` are the product repo's real,
+> current filenames; that repo has not been renamed even though this plugin's
+> brand was. They are accurate citations, not stale references, and the
+> retired-name guard scopes to this plugin's own identity rather than failing on
+> them — widening it would only teach whoever hit it to weaken the test.
+>
+> **Known future break:** when the product repo is renamed, these citations go
+> stale in the worse direction — pointing at files that no longer exist rather
+> than merely carrying an old name. Whoever does that rename should re-point them
+> here, in `src/verbs/get-project.ts` and in `src/verbs/list-projects.ts`.
+
+**Two distinct failures, deliberately not collapsed into one:**
+
+| Input | Result |
+| --- | --- |
+| Malformed `project_id` | Rejected before any request — no round trip is spent |
+| Well-formed id, no such project | `ProjectNotFoundError` naming the id and the number of projects the product reported |
+| Product unreachable | `ProductError` naming the URL and where host and port came from |
+
+"No such project" and "the product is down" call for different responses from a
+caller, so they are different error types. Collapsing them would make a stale id
+look like an outage.
 
 ## Names
 
@@ -237,7 +324,7 @@ Expected, from the plugin's install path:
 
 ```json
 {"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.0"}},"jsonrpc":"2.0","id":1}
-{"result":{"tools":[{"name":"list_projects", ...}]},"jsonrpc":"2.0","id":2}
+{"result":{"tools":[{"name":"list_projects", ...},{"name":"get_project", ...}]},"jsonrpc":"2.0","id":2}
 ```
 
 The `serverInfo.name` in the first response is the string OpenClaw prefixes

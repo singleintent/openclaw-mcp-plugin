@@ -18,6 +18,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, type Config } from "./config.js";
 import { SERVER_NAME, SERVER_VERSION } from "./names.js";
+import { getProject } from "./verbs/get-project.js";
 import {
   DEFAULT_LIMIT,
   MAX_LIMIT,
@@ -31,7 +32,9 @@ export const TOOLS: Tool[] = [
     name: "list_projects",
     description:
       "List SingleIntent projects. Returns id, name, working directory and a " +
-      "count of agents per project. Use the agents verb for agent identities.",
+      "count of agents per project; use get_project for the agent ids of one " +
+      "project. Set agent_id to answer \"which projects is this agent in?\" — " +
+      "the answer can be more than one.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -48,6 +51,30 @@ export const TOOLS: Tool[] = [
           minimum: 0,
           default: 0,
           description: "Projects to skip, for paging through a truncated result.",
+        },
+        agent_id: {
+          type: "string",
+          description:
+            "Keep only projects containing this agent. When set, total counts " +
+            "the matching projects, not every project that exists.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_project",
+    description:
+      "Get one SingleIntent project by id, including the full agentIds array " +
+      "that list_projects reduces to a count. Fails with a not-found naming " +
+      "the id when no project matches.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["project_id"],
+      properties: {
+        project_id: {
+          type: "string",
+          description: "The project's UUID, as returned by list_projects.",
         },
       },
     },
@@ -70,10 +97,26 @@ export function createServer(config: Config): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     try {
+      // Arguments cross the wire in the snake_case of the verb names; the verb
+      // modules speak camelCase. The mapping lives here so it happens once.
       if (request.params.name === "list_projects") {
         const result = await listProjects(
           config,
-          { limit: args.limit as number | undefined, offset: args.offset as number | undefined },
+          {
+            limit: args.limit as number | undefined,
+            offset: args.offset as number | undefined,
+            agentId: args.agent_id,
+          },
+          { signal: extra?.signal },
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      }
+      if (request.params.name === "get_project") {
+        const result = await getProject(
+          config,
+          { projectId: args.project_id },
           { signal: extra?.signal },
         );
         return {
