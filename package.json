@@ -1,0 +1,63 @@
+{
+  "name": "@singleinstinct/openclaw-mcp-plugin",
+  "version": "0.1.0",
+  "description": "SingleInstinct MCP server for OpenClaw, declared as a plugin-owned stdio MCP server.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/singleinstinct/openclaw-mcp-plugin.git"
+  },
+  "homepage": "https://github.com/singleinstinct/openclaw-mcp-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/singleinstinct/openclaw-mcp-plugin/issues"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "prepack": "npm run clean && npm run build",
+    "pretest": "npm run build",
+    "test": "vitest run"
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "zod": "^4.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.9.5"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "openclaw": "2026.9.5",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "compat": {
+      "pluginApi": ">=2026.9.5"
+    },
+    "install": {
+      "npmSpec": "@singleinstinct/openclaw-mcp-plugin",
+      "minHostVersion": ">=2026.9.5"
+    }
+  }
+}
