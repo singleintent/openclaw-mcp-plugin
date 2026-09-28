@@ -45,8 +45,13 @@ capability list, accept it:
 openclaw plugins install @singleinstinct/openclaw-mcp-plugin --accept-capabilities
 ```
 
-Installing from a local path or any non-ClawHub source additionally requires
-`--force`, which confirms you reviewed the source.
+Installing from a local path or any non-ClawHub source hits a **second, separate**
+gate and refuses with "Install cancelled; rerun with --force after reviewing the
+source." Developing against a checkout therefore needs both flags:
+
+```bash
+openclaw plugins install . --link --accept-capabilities --force
+```
 
 The plugin declares its MCP server in `openclaw.plugin.json` rather than
 registering tools in code. That matters to you as a consumer: manifest-declared
@@ -69,6 +74,10 @@ Sandboxing applies a second allow gate that the above does not satisfy. Add
 built-in tools is the symptom to watch for.
 
 ## Verifying the install
+
+> **If `openclaw mcp list` shows nothing, the install has not failed.** That
+> command cannot see this plugin and never will. Run
+> `openclaw plugins inspect singleinstinct` instead.
 
 **Three commands that look right and cannot verify this plugin.** All three
 report success or silence whether or not the plugin works:
