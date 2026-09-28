@@ -71,7 +71,18 @@ describe("pagination", () => {
   });
 
   it("defaults to the documented limit", () => {
-    expect(shape(many).projects).toHaveLength(DEFAULT_LIMIT);
+    // Sized off DEFAULT_LIMIT rather than a literal, because the point is that
+    // omitting `limit` applies it — not what the number happens to be. The 120
+    // fixture above no longer reaches it since W-031 raised the default to 200.
+    const past = Array.from({ length: DEFAULT_LIMIT + 1 }, (_, i) => project(String(i)));
+    expect(shape(past).projects).toHaveLength(DEFAULT_LIMIT);
+    expect(shape(past).truncated).toBe(true);
+  });
+
+  it("does not truncate a collection that fits inside the default", () => {
+    // The regression W-031 exists for: 120 rows, no limit given, nothing lost.
+    expect(shape(many).projects).toHaveLength(120);
+    expect(shape(many).truncated).toBe(false);
   });
 });
 

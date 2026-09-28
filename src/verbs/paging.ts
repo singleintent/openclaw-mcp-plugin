@@ -15,13 +15,30 @@
  * compare `offset + rows.length` against `total` to discover there is more.
  */
 
-export const DEFAULT_LIMIT = 50;
+/**
+ * Equal to `MAX_LIMIT`, so `limit` only ever means "give me less than
+ * everything" — the coherent reading of an optional narrowing parameter.
+ *
+ * It was 50, picked against no measurement, and the live roster had already
+ * crossed it: a bare `list_agents()` returned `total: 53, truncated: true`, so
+ * three agents were dropped from any caller that did not read `truncated`. A
+ * default that silently omits live data is the wrong default even when the
+ * omission is reported honestly — `truncated` is there to describe a limit the
+ * caller chose, not to excuse one it never asked for.
+ *
+ * Measured live, nothing approaches the ceiling: agents 53, connections 33,
+ * templates 19, projects 12, backlog 11, activity 2–3.
+ */
+export const DEFAULT_LIMIT = 200;
 
 /**
  * The ceiling exists so a caller cannot ask for an unbounded response by
- * accident. 200 clears the widest live collection (53 agents, 33 connections),
- * so today it never truncates anything in practice; it is a guard against the
- * product growing, not a limit anyone currently hits.
+ * accident, and it is unchanged by `DEFAULT_LIMIT` rising to meet it. The two
+ * constants answer different questions — "how much may a caller ask for" and
+ * "how much does a caller get unasked" — and they are separate names rather than
+ * one because the first is a guard against the product growing and the second is
+ * a statement about the product today. If the roster ever passes 200, this is
+ * the one that has to be argued about.
  */
 export const MAX_LIMIT = 200;
 

@@ -94,7 +94,7 @@ tolerate being called with none, or it will act on empty config intermittently.
 ### `list_projects`
 
 Returns `id`, `name`, `workingDirectory` and `agentCount` per project, with
-`total` and `truncated`. Takes `limit` (1–200, default 50), `offset`, and an
+`total` and `truncated`. Takes `limit` (1–200, default 200), `offset`, and an
 optional `agent_id` filter.
 
 ```json
@@ -360,7 +360,7 @@ still catches it.
 ## Paging
 
 Every list verb returns `total` and an explicit `truncated`, and takes `limit`
-(1–200, default 50) and `offset`. `total` always means **rows that matched before
+(1–200, default 200) and `offset`. `total` always means **rows that matched before
 the limit** — on a verb with a filter set, that is the post-filter count, not an
 inventory of everything that exists.
 
