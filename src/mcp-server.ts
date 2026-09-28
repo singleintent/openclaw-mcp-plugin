@@ -19,6 +19,7 @@ import {
 import type { RequestOptions } from "./client.js";
 import { loadConfig, type Config } from "./config.js";
 import { SERVER_NAME, SERVER_VERSION } from "./names.js";
+import { getActivity } from "./verbs/get-activity.js";
 import { getBacklog } from "./verbs/get-backlog.js";
 import { getProject } from "./verbs/get-project.js";
 import { listAgents } from "./verbs/list-agents.js";
@@ -154,6 +155,20 @@ export const TOOLS: Tool[] = [
       properties: { ...pagingSchema("items") },
     },
   },
+  {
+    name: "get_activity",
+    description:
+      "Current agent activity: running sessions plus those that ended recently. " +
+      "Returns now, the product server's clock, alongside the sessions; every " +
+      "timestamp in the response is epoch milliseconds relative to that now and " +
+      "to nothing else. Compute elapsed time against now, not against your own " +
+      "clock. nowSource says whose clock it is.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { ...pagingSchema("sessions") },
+    },
+  },
 ];
 
 /**
@@ -197,6 +212,15 @@ export function createServer(config: Config): Server {
           limit: args.limit as number | undefined,
           offset: args.offset as number | undefined,
           projectId: args.project_id,
+        },
+        options,
+      ),
+    get_activity: (args, options) =>
+      getActivity(
+        config,
+        {
+          limit: args.limit as number | undefined,
+          offset: args.offset as number | undefined,
         },
         options,
       ),

@@ -8,6 +8,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { ProductError } from "./client.js";
 import { baseUrl, loadConfig } from "./config.js";
+import { getActivity } from "./verbs/get-activity.js";
 import { getBacklog } from "./verbs/get-backlog.js";
 import { ProjectNotFoundError, getProject } from "./verbs/get-project.js";
 import { listAgents } from "./verbs/list-agents.js";
@@ -193,6 +194,43 @@ describe("live product", () => {
       result.items.some((backlogItem) => (backlogItem.description ?? "").length > 0),
     ).toBe(true);
   }, 20_000);
+
+  it("round-trips the product's now against a direct read of the route", async () => {
+    if (!reachable) return;
+    // Bracket the verb between two direct reads. This proves now is a live value
+    // the product produced on this request rather than a stale or invented one.
+    //
+    // Stated honestly: on a single host this bracket cannot by itself tell the
+    // product's clock from a local one, because they are the same clock. The
+    // assertion that actually discriminates is the unit test that feeds shape()
+    // a stale now and requires it to come back stale. This is the live half.
+    const read = async (): Promise<number> => {
+      const response = await fetch(`${baseUrl(config)}/api/activity`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      return ((await response.json()) as { now: number }).now;
+    };
+
+    const before = await read();
+    const result = await getActivity(config, { limit: 200 });
+    const after = await read();
+
+    expect(result.nowSource).toBe("product");
+    expect(typeof result.now).toBe("number");
+    expect(result.now).toBeGreaterThanOrEqual(before);
+    expect(result.now).toBeLessThanOrEqual(after);
+    // All three inside the same second, which is what makes the bracket tight
+    // enough to mean anything.
+    expect(after - before).toBeLessThan(1_000);
+
+    for (const activitySession of result.sessions) {
+      expect(activitySession.agentId.length).toBeGreaterThan(0);
+      if (activitySession.startedAt !== null) {
+        // Timestamps are on now's scale, not a different unit or epoch.
+        expect(activitySession.startedAt).toBeLessThanOrEqual(result.now);
+      }
+    }
+  }, 30_000);
 
   it("rejects a project id the product could never have minted", async () => {
     if (!reachable) return;
