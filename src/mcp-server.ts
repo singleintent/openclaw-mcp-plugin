@@ -6,22 +6,15 @@
  * `mcpServers.singleintent`. That manifest key — not the plugin `id` — is what
  * OpenClaw uses to prefix the tools it discovers here, as `singleintent__<verb>`.
  *
- * The verb surface is deliberately empty. The `tools` capability is wired and
- * `tools/list` answers with an empty array, so the handshake proves the packaged
- * code executes without asserting a product surface that is not yet specified.
+ * Config is resolved by this process rather than handed to it; see src/config.ts
+ * for why none of OpenClaw's config surfaces can reach a stdio subprocess.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  ListToolsRequestSchema,
-  type Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+import { ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import { SERVER_NAME, SERVER_VERSION } from "./names.js";
 
-/** Kept in step with package.json by src/mcp-server.test.ts. */
-export const SERVER_VERSION = "0.1.0";
-
-/** Matches `mcpServers.singleintent` in openclaw.plugin.json. */
-export const SERVER_NAME = "singleintent";
+export { SERVER_NAME, SERVER_VERSION };
 
 /** Verb surface, pending specification. */
 export const TOOLS: Tool[] = [];
@@ -32,9 +25,7 @@ export function createServer(): Server {
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS,
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
   return server;
 }
@@ -49,7 +40,7 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error: unknown) => {
     // stdout carries the MCP framing; diagnostics must go to stderr, where
     // OpenClaw logs them with a `bundle-mcp:singleintent:` prefix.
-    console.error("singleintent mcp server failed to start:", error);
+    console.error(`${SERVER_NAME} mcp server failed to start:`, error);
     process.exit(1);
   });
 }
