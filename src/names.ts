@@ -23,8 +23,23 @@ export const CONFIG_DIR_NAME = ".singleintent";
 /** Name the MCP handshake advertises; OpenClaw prefixes tools with it. */
 export const SERVER_NAME = BRAND;
 
-/** Kept in step with package.json and the manifest by src/names.test.ts. */
-export const SERVER_VERSION = "0.1.0";
+/**
+ * The version the MCP handshake advertises, and the third copy of a string that
+ * also lives in `package.json`, `openclaw.plugin.json` and `package-lock.json`.
+ *
+ * Four copies is not a design anyone would choose; it is what the formats force.
+ * npm publishes `package.json`, `openclaw plugins inspect` reports the manifest's,
+ * `npm ci` fails on a lockfile that disagrees with either, and this constant is
+ * what a caller sees over stdio. None of the four can read another at build time
+ * without giving up something: importing `package.json` here would need
+ * `resolveJsonModule` and would put the whole manifest in `dist/`.
+ *
+ * So they are kept in step by assertion instead, in `src/names.test.ts`, which
+ * covers all four and the README's quoted handshake output. That test is the reason
+ * writing the version by hand in four places is safe rather than reckless — a bump
+ * that misses one fails the suite before it can reach a registry.
+ */
+export const SERVER_VERSION = "0.1.1";
 
 /** Fully qualified name of an env var this plugin reads. */
 export const envVar = (suffix: string): string => `${ENV_PREFIX}${suffix}`;

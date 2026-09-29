@@ -1,6 +1,6 @@
 {
   "name": "@singleintent/openclaw-mcp-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SingleIntent MCP server for OpenClaw, declared as a plugin-owned stdio MCP server.",
   "license": "Apache-2.0",
   "type": "module",

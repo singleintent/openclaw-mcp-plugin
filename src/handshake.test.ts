@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { TOOLS } from "./mcp-server.js";
+import { SERVER_NAME, SERVER_VERSION, TOOLS } from "./mcp-server.js";
 
 const SERVER = fileURLToPath(new URL("../dist/mcp-server.js", import.meta.url));
 
@@ -73,8 +73,14 @@ describe("built server answers a real MCP handshake", () => {
     expect(initialize?.result).toMatchObject({
       protocolVersion: PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      // The name OpenClaw prefixes discovered tools with.
-      serverInfo: { name: "singleintent", version: "0.1.0" },
+      // Both derived rather than written out. The name is what OpenClaw prefixes
+      // discovered tools with, and the version is a string that already exists in
+      // four files; a literal here would be a fifth copy, and it would turn every
+      // version bump into a failure in the one test whose subject is the handshake.
+      // `names.test.ts` is what holds the four in agreement, so asserting the
+      // constant here still proves the built artifact reports the bumped version —
+      // dist/ is rebuilt by pretest, so a stale build fails this.
+      serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
     });
 
     const listTools = responses.find((r) => r.id === 2);
