@@ -6,9 +6,16 @@
  * silent pass would not be.
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { ProductError } from "./client.js";
+import { ProductConflictError, ProductError, ProductUpstreamError } from "./client.js";
 import { baseUrl, loadConfig } from "./config.js";
+import { applyRole } from "./verbs/apply-role.js";
+import { createAgent } from "./verbs/create-agent.js";
+import { createConnection } from "./verbs/create-connection.js";
+import { createProject } from "./verbs/create-project.js";
+import { createTemplate } from "./verbs/create-template.js";
 import { getActivity } from "./verbs/get-activity.js";
+import { sendMessage } from "./verbs/send-message.js";
+import { updateTemplate } from "./verbs/update-template.js";
 import { getBacklog } from "./verbs/get-backlog.js";
 import { ProjectNotFoundError, getProject } from "./verbs/get-project.js";
 import { listAgents } from "./verbs/list-agents.js";
@@ -247,4 +254,135 @@ describe("live product", () => {
       new RegExp(`no project with id ${missing}`),
     );
   }, 20_000);
+});
+
+/**
+ * The write verbs against the real routes, without writing anything.
+ *
+ * **Why the success paths are not automated here, stated rather than left as a
+ * gap.** The product has no delete route. A suite that exercised `create_project`
+ * or `create_agent` on every run would leave a row behind on every run, permanently,
+ * in whoever's product it ran against — and `apply_role`, `create_connection` and
+ * `send_message` would additionally spend a billed agent turn each time and change
+ * an agent's behaviour for good. A test that mutates the operator's product to prove
+ * it can is a worse defect than the coverage it buys.
+ *
+ * So the division is deliberate. The request each verb puts on the wire is proved
+ * against a local server in `write-requests.test.ts`, to the byte. What is proved
+ * *here* is the half that a local server cannot fake: that the real routes accept
+ * these bodies, and that the real failures land in the error types this connector
+ * claims for them. Every case below either refuses before sending or hits a route
+ * that refuses before writing — checked against the running product, which returns
+ * `409` before the Gateway is touched on both conflict paths.
+ *
+ * The success paths were exercised once by hand, over stdio against the built
+ * artifact, and the rows that created are recorded in the commit message.
+ */
+describe("live product — write verbs, on paths that write nothing", () => {
+  /** Well-formed and mints-as-the-product-does, but matching no project. */
+  const UNKNOWN_PROJECT = "00000000-0000-4000-8000-000000000000";
+
+  it("refuses a malformed argument before any request reaches the product", async () => {
+    // No `reachable` guard: the point is that the product is never contacted, so
+    // this holds whether or not it is running. A wrong port proves it.
+    const wrong = { ...config, port: 1 };
+
+    await expect(createProject(wrong, { name: "x" })).rejects.toThrow(/working_directory/);
+    await expect(createAgent(wrong, { name: "x", projectId: "joy-labs" })).rejects.toThrow(
+      /must be a UUID/,
+    );
+    await expect(updateTemplate(wrong, { templateId: UNKNOWN_PROJECT })).rejects.toThrow(
+      /needs name, content, or both/,
+    );
+    await expect(createConnection(wrong, { from: "a-one", to: "a-one" })).rejects.toThrow(
+      /must be different agents/,
+    );
+    await expect(sendMessage(wrong, { agentId: "a-one", message: "  " })).rejects.toThrow(
+      /only whitespace/,
+    );
+    // Each of these would have been a ProductError naming the unreachable port if
+    // the request had been attempted, so none of them was.
+  }, 20_000);
+
+  it("reaches the real POST /api/agents and is refused for an unknown project", async () => {
+    if (!reachable) return;
+    // Proves the body is accepted as well-formed by the route — it got past the
+    // name and projectId checks to the project lookup — while creating nothing.
+    const error = await createAgent(config, {
+      name: "singleintent-connector-probe",
+      projectId: UNKNOWN_PROJECT,
+    }).catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ProductError);
+    expect(error.message).toContain(`No project ${UNKNOWN_PROJECT}`);
+    /**
+     * Asserted as measured, not as preferred. The product answers this `502`, so
+     * this connector classifies it as an upstream failure — which it is not: the
+     * Gateway was never asked. The misclassification is the product's, and the
+     * alternative would be this layer second-guessing a status code, which is
+     * exactly the work it does not do. Recorded here so the behaviour is known
+     * rather than discovered.
+     */
+    expect(error).toBeInstanceOf(ProductUpstreamError);
+  }, 30_000);
+
+  it("surfaces an already-applied role as a conflict, not as an outage", async () => {
+    if (!reachable) return;
+    // Reads the roster for an agent that already carries a role, so the fixture is
+    // the live product's own state rather than an id hard-coded here.
+    const roster = await listAgents(config, { limit: 200 });
+    const roled = roster.agents.find((agent) => agent.onboarding?.status === "applied");
+    const templates = await listTemplates(config, { limit: 200 });
+    const template = templates.templates[0];
+    if (roled === undefined || template === undefined) return;
+
+    const error = await applyRole(config, {
+      agentId: roled.id,
+      templateId: template.id,
+    }).catch((e: Error) => e);
+
+    // The route refuses before it sends anything to the agent, so no turn was spent.
+    expect(error).toBeInstanceOf(ProductConflictError);
+    expect(error.message).toContain("409");
+    // The instruction that makes the type worth having.
+    expect(error.message).toMatch(/retrying cannot succeed/);
+  }, 30_000);
+
+  it("surfaces an existing connection as a conflict, before spending a turn", async () => {
+    if (!reachable) return;
+    const existing = (await listConnections(config, { limit: 200 })).connections.find(
+      (connection) => connection.from !== null && connection.to !== null,
+    );
+    if (existing === undefined) return;
+
+    const error = await createConnection(config, {
+      from: existing.from as string,
+      to: existing.to as string,
+    }).catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ProductConflictError);
+    expect(error.message).toContain("already exists");
+    expect(error.message).toMatch(/retrying cannot succeed/);
+  }, 30_000);
+
+  it("does not treat the reverse direction as the same connection", async () => {
+    if (!reachable) return;
+    // Directedness, asserted against live data rather than only in a doc comment:
+    // if any pair exists in one direction only, the two are distinct rows.
+    const connections = (await listConnections(config, { limit: 200 })).connections;
+    const keys = new Set(connections.map((c) => `${c.from}->${c.to}`));
+    const oneWay = connections.filter((c) => !keys.has(`${c.to}->${c.from}`));
+    expect(oneWay.length).toBeGreaterThan(0);
+  }, 20_000);
+
+  it("creates nothing when create_template is handed whitespace the product would take", async () => {
+    if (!reachable) return;
+    const before = await listTemplates(config, { limit: 200 });
+    await expect(
+      createTemplate(config, { name: "probe", content: "   " }),
+    ).rejects.toThrow(/only whitespace/);
+    // The product's own check is falsy and would have accepted this, so the count
+    // staying put is what proves the refusal happened on this side.
+    expect((await listTemplates(config, { limit: 200 })).total).toBe(before.total);
+  }, 30_000);
 });

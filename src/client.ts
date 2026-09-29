@@ -54,6 +54,22 @@ export class ProductError extends Error {}
  */
 export class ProductUpstreamError extends ProductError {}
 
+/**
+ * The product answered, and refused because the thing asked for is already done.
+ *
+ * Only the write routes can produce this, and it is the failure a caller is most
+ * likely to reach by retrying: `apply_role` refuses an agent that already has a
+ * role record in any state, and `create_connection` refuses a pair that already
+ * exists. Both answer `409`.
+ *
+ * Separated from `ProductError` for the same reason `ProjectNotFoundError` is
+ * separated on the read side: "this was already done" and "the product is broken"
+ * call for opposite responses — stop, versus try again — and a caller that cannot
+ * tell them apart will retry the one request where retrying is never right. A
+ * subclass, so existing `catch (ProductError)` still catches it.
+ */
+export class ProductConflictError extends ProductError {}
+
 /** Statuses that mean the responder failed on behalf of something further up. */
 const UPSTREAM_STATUSES = new Set([502, 503, 504]);
 
@@ -62,10 +78,15 @@ export type RequestOptions = {
   signal?: AbortSignal;
 };
 
-export async function getJson<T>(
+/** The write methods the product exposes. No DELETE: it has no delete route. */
+export type WriteMethod = "POST" | "PUT";
+
+async function request<T>(
   config: Config,
+  method: "GET" | WriteMethod,
   path: string,
-  options: RequestOptions = {},
+  body: unknown,
+  options: RequestOptions,
 ): Promise<T> {
   const url = `${baseUrl(config)}${path}`;
   const headers: Record<string, string> = {
@@ -74,6 +95,9 @@ export async function getJson<T>(
   };
   if (config.token !== undefined) {
     headers.authorization = `Bearer ${config.token}`;
+  }
+  if (body !== undefined) {
+    headers["content-type"] = "application/json";
   }
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -85,7 +109,16 @@ export async function getJson<T>(
 
   let response: Response;
   try {
-    response = await fetch(url, { headers, signal });
+    response = await fetch(url, {
+      method,
+      headers,
+      // JSON.stringify drops keys whose value is undefined, which is the
+      // behaviour `update_template` depends on: an omitted argument has to reach
+      // the product as genuinely absent, because the product applies each field
+      // only if it is not undefined. Sending null instead would overwrite.
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
+    });
   } catch (error) {
     // Name the endpoint. "fetch failed" with no URL is the least useful
     // diagnostic a consumer can receive when the product simply is not running.
@@ -96,8 +129,20 @@ export async function getJson<T>(
     // below all had the product answer, which settles that question — see the
     // comment on each.
     const reason = signal.aborted ? `timed out after ${timeoutMs}ms` : String(error);
+    // A write that timed out is not a write that did not happen. The request
+    // reached the product or it did not, and from here there is no way to tell;
+    // the product may still be working and may still commit. Retrying is how a
+    // caller turns one uncertain write into two certain ones, so the message says
+    // to check first. Only on a timeout: if the connection was refused outright,
+    // nothing was received and there is nothing to have half-done.
+    const uncertain =
+      method !== "GET" && signal.aborted
+        ? ` The ${method} may still be in progress on the product and may still ` +
+          `complete — check with the matching read verb before retrying, because ` +
+          `retrying would write twice.`
+        : "";
     throw new ProductError(
-      `cannot reach the product at ${url} (${reason}). ` +
+      `cannot reach the product at ${url} (${reason}).${uncertain} ` +
         `Is it running, and are host and port correct? ` +
         `host=${config.sources.host} port=${config.sources.port}. ` +
         `If you do not have the SingleIntent product yet, get it at ` +
@@ -119,6 +164,16 @@ export async function getJson<T>(
           `not the product at host=${config.sources.host} port=${config.sources.port}.`,
       );
     }
+    if (response.status === 409) {
+      // The product refused because the state already exists. Its own message
+      // says which state, so it is carried through in `detail` rather than
+      // restated; what is added is the one instruction that follows from the
+      // type, since this is the failure a caller is most tempted to retry.
+      throw new ProductConflictError(
+        `${detail}. This already exists or has already been done, so retrying ` +
+          `cannot succeed — read the current state instead of calling again.`,
+      );
+    }
     // Also no link: a non-upstream status means the product is running and
     // refused this request. Whatever is wrong, it is not a missing install.
     throw new ProductError(detail);
@@ -132,4 +187,29 @@ export async function getJson<T>(
     // wrong-version problem, not a missing product.
     throw new ProductError(`${url} did not return valid JSON: ${String(error)}`);
   }
+}
+
+export async function getJson<T>(
+  config: Config,
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
+  return request<T>(config, "GET", path, undefined, options);
+}
+
+/**
+ * A write: the body in, the product's JSON out, and nothing in between.
+ *
+ * One function for POST and PUT rather than two, because the method is the only
+ * thing that differs and a second wrapper would be a second place for the header
+ * and error handling to drift.
+ */
+export async function sendJson<T>(
+  config: Config,
+  method: WriteMethod,
+  path: string,
+  body: unknown,
+  options: RequestOptions = {},
+): Promise<T> {
+  return request<T>(config, method, path, body, options);
 }

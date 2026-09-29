@@ -91,6 +91,12 @@ tolerate being called with none, or it will act on empty config intermittently.
 
 ## Verbs
 
+Fourteen: seven that read and seven that write. Every one is a single call to the
+product's API. This connector validates arguments, makes that call, and shapes the
+response — it holds no state, keeps no cache, and performs no step the product does
+not expose as an endpoint. Where something is missing from the surface, the reason
+is that there is no route for it.
+
 ### `list_projects`
 
 Returns `id`, `name`, `workingDirectory` and `agentCount` per project, with
@@ -332,13 +338,204 @@ at the call site rather than only in this file.
 The session projection drops nothing — twelve bounded scalars. `displayName` is
 already truncated server-side and is not re-truncated here.
 
+## Write verbs
+
+Seven, and three things are true of all of them before the individual entries.
+
+**Nothing here can be deleted.** The product exposes no delete route, so this
+connector has none. A project, an agent, a template, a role and a connection are
+each created once and stay. Only `update_template` can be taken back, by calling it
+again with the previous values — which means reading them first if you want to be
+able to.
+
+**Three of them spend a real agent turn.** `apply_role`, `create_connection` and
+`send_message` each wake an agent and wait for it to finish before the product
+records anything. They are billed, they take minutes, and they block for the whole
+turn. There is no fire-and-forget variant of any of them to call instead.
+
+**A write that times out is not a write that did not happen.** Every one of these
+sets a client timeout deliberately *longer* than the product's own budget for the
+call, so the product gives up first and returns a real error. A shorter client
+timeout is the tempting choice and the wrong one: hanging up early does not stop
+the product, so the call would be reported as failed while the write completed. If
+one does time out here anyway, the error says the write may still land and to read
+before retrying — retrying is how one uncertain write becomes two certain ones.
+
+| Verb | Route | Agent turn | Undoable |
+| --- | --- | --- | --- |
+| `create_project` | `POST /api/projects` | no | no |
+| `create_agent` | `POST /api/agents` | no | no |
+| `create_template` | `POST /api/templates` | no | no |
+| `update_template` | `PUT /api/templates/:id` | no | **yes** — call it again |
+| `apply_role` | `POST /api/agent-roles` | **yes** | no, and never repeatable |
+| `create_connection` | `POST /api/connections` | **yes**, up to 600s | no |
+| `send_message` | `POST /api/chat` | **yes** | no — already delivered |
+
+### `create_project`
+
+Name and working directory in; the created record out, including the `id` every
+`project_id` argument takes. Both fields are required here because the product
+requires both, so a missing one is refused before a round trip is spent.
+
+> **The working directory is recorded, not resolved.** The product does not create
+> it, does not check that it exists, and does not make a relative path absolute. A
+> typo is stored as a typo and surfaces later as agents pointed somewhere wrong.
+
+### `create_agent`
+
+Registers an agent and adds it to a project. Returns `agentId`, lifted out of the
+response because it is what every later `agent_id` takes, alongside the product's
+own create result whole.
+
+`name`, `project_id` and `workspace_subpath` are each **permanent**. The workspace
+is derived from the project's working directory at creation and never changed
+afterwards, and an agent's identity is not editable. A wrong one means creating
+another agent.
+
+`workspace_subpath` is relative and must stay inside the project's directory. An
+absolute path is refused here; an escaping relative path is refused by the product,
+which is the only side that knows what it would escape from.
+
+> **`template_id` and `content` are deliberately not arguments.** The product's
+> `POST /api/agents` serves a second flow when those two are sent together: it
+> writes a *pending* onboarding record, and finishing it needs a separate call to
+> `POST /api/agents/:id/onboarding` that no verb here makes.
+>
+> They are left out rather than wrapped, and the reason is the rule this package is
+> built on — a verb is one API call. A verb that made both calls would be this
+> connector orchestrating a product flow, and it would have no honest failure
+> report: when the first call succeeds and the second does not, the caller cannot
+> tell that from a failure that created nothing.
+>
+> Leaving them out also keeps a bad state unreachable. Offering them without the
+> follow-up would let a caller strand an agent at "Onboarding not started" with
+> nothing in this surface able to move it on. Every agent this verb creates has no
+> onboarding record at all — which is exactly the state `apply_role` needs, so
+> **`apply_role` is the way to give a new agent its role**, and it works on every
+> agent this verb produces.
+>
+> If the two-step flow is wanted through MCP, the thing to add is a verb that wraps
+> the onboarding call by itself. One verb, one call.
+
+### `create_template`
+
+Name and content in; the created record out with the `id` `apply_role` takes.
+
+`content` is the role text an agent is later told to adopt as its own identity. It
+is used **verbatim** — nothing here or in the product rewrites or validates it — so
+it should read as instructions to that agent rather than as a description of one.
+
+`content` is returned, where `list_templates` drops it. Same discriminator, read
+the other way: on a list the row still identifies a template without it, but on a
+create it is the confirmation of what was stored, and it is text the caller just
+sent. A length would answer a question nobody asked.
+
+> **Whitespace-only content is refused here, and the product would accept it.** The
+> product's check is a falsy one, so `"   "` creates a template that then becomes an
+> agent's whole role. This is the only place this connector is deliberately stricter
+> than the product, and it is stricter about a write that would otherwise succeed
+> and be useless.
+
+### `update_template`
+
+A genuine partial update. `name` and `content` are independent and each optional:
+omit one to leave it unchanged. The response carries `changed`, listing which were
+sent, because nothing else in the response can tell a field left alone from a field
+set to the same value.
+
+What makes "omitted" work is that an omitted argument reaches the product
+**absent** rather than as `null` — the product applies each field only when it is
+not undefined, so a `null` would overwrite. That is asserted on the raw request
+body in the tests, because a parsed body cannot tell the two apart and the
+difference is whether the template's text survives the call.
+
+A call with neither field is refused rather than sent: the product would accept it
+and rewrite the record with no change.
+
+> **This does not reach agents already carrying the role.** Applying a template
+> copies its text onto the agent at that moment. Editing the template afterwards
+> changes what the *next* application says and nothing else — and there is no
+> re-apply, so an edit made to correct a live agent's behaviour will appear to
+> succeed and do nothing.
+
+### `apply_role`
+
+Gives an agent its role from a template. The agent is asked to store the template's
+text as its own identity, which is a real turn.
+
+**Once, permanently.** The product refuses any agent that already has a role record
+in *any* state — `applied`, `pending`, `running` and `failed` all block it — and
+nothing here or in the product's API clears one. A second call always fails, and
+the failure arrives as `ProductConflictError` saying that retrying cannot succeed.
+Check the template is the right one before calling; getting it wrong means creating
+another agent.
+
+The response keeps `roleRecord` whole and reduces the turn to `runId` and `status`.
+What the agent said on being handed its role is its reply, not this call's result.
+`roleRecord.content` is kept, and it is the only record of the text as applied: a
+later edit to the template will not change it and there is no second application.
+
+### `create_connection`
+
+Connects `from` to `to` so the two are aware of each other.
+
+**Directed.** One call connects one way; the reverse is a separate call, and a
+separate agent turn. An existing pair is refused as a conflict — the reverse
+direction is a different connection and never conflicts.
+
+This is the slowest verb here. The product wakes `from` and waits for it to
+introduce itself, and gives that turn a **600s** budget after a real observation: an
+introduction between two identity-rich agents ran to 44 messages. The client budget
+here is derived from 600s rather than from the default the other two turn verbs use.
+
+> **A connection is awareness, not a task.** The product explicitly tells the two
+> agents not to start, propose or discuss any work in that exchange — wording it
+> arrived at after an earlier phrasing was read as a kickoff and produced real work
+> instead of an introduction. Calling this to make something happen will not.
+
+The response keeps the `connection` row whole and reduces the turn to `runId` and
+`status`; the introduction is the agents' conversation.
+
+### `send_message`
+
+Sends a message to an agent and returns its reply. **Blocks for that agent's whole
+turn**, which can take minutes.
+
+The projection here is the opposite of the other two turn verbs, by the same rule:
+there the run's content is a third party's conversation, here it *is* the result. So
+the reply text is kept and what gets dropped is the assembly detail around it —
+sequence numbers, timestamps, and the identity bookkeeping that describes how the
+reply was put together rather than what it says. Text blocks are joined rather than
+reduced to the last one, because a reply interrupted by tool use arrives as several
+and taking one would return a fragment that looks like the whole answer.
+
+A `reply` of `null` alongside a terminal `status` is a real outcome: the turn
+finished and produced no text. `status` is what tells that apart from a failure,
+which is why it is returned rather than left out as redundant.
+
+> **If this times out, the message was still delivered.** The agent has read it and
+> is probably still working. Check `get_activity` using the `runId` rather than
+> resending — for a message that asks an agent to *do* something, resending is not a
+> duplicate record, it is the work happening twice.
+
+### What has no write verb, and why
+
+`get_backlog` has no counterpart. `/api/backlog` is a GET route with no write route
+beside it, so there is nothing to call — and writing the backlog by any other means
+would be this connector doing work the product has not exposed. If a backlog write
+is wanted, it starts as a product endpoint.
+
+There is no delete verb of any kind, and no way to edit an agent after creating it,
+for the same reason: no route.
+
 ## Errors, and the distinction worth keeping
 
 | Situation | Type | Site link | What it means |
 | --- | --- | --- | --- |
 | Nothing answered | `ProductError` — "cannot reach the product at `<url>`" plus host and port provenance | **yes** | The product is not running, is not installed, or host/port are wrong |
 | `502`/`503`/`504` | `ProductUpstreamError` | no | The product **is** running and answered; the OpenClaw Gateway it proxies is what failed |
-| `500` | `ProductError` | no | The product's own flat-file store failed |
+| `500` | `ProductError` | no | The product's own store failed |
+| `409` | `ProductConflictError` | no | Already exists or already done. Reachable only from a write, and **retrying cannot succeed** |
 | Non-2xx otherwise | `ProductError` | no | The product is running and refused the request |
 | `200` that is not JSON | `ProductError` | no | Something answered on that port, but it is not this product |
 
@@ -349,7 +546,17 @@ The product splits its own failures this way: Gateway-backed routes
 different owner than "the product is down", and flattening both into
 "unreachable" throws away the only signal that tells them apart.
 `ProductUpstreamError` is a subclass of `ProductError`, so existing handling
-still catches it.
+still catches it. So is `ProductConflictError`, which exists for the same kind of
+reason one step further on: "this was already done" and "the product is broken" call
+for opposite responses — stop, versus try again — and `apply_role` is the call a
+caller is most likely to answer by retrying. `get_project` splits the same way on
+the read side, with `ProjectNotFoundError` for an id that matches nothing.
+
+**A write that times out gets an extra sentence, and only a write.** On the first
+row above, a `POST` or `PUT` that hit its deadline adds that the write may still be
+in progress and to check with the matching read verb before retrying. A read gets no
+such warning because it cannot have changed anything, and a refused connection gets
+none either: nothing was received, so there is nothing to have half-done.
 
 ### Why only the first row carries a link to the product
 
@@ -503,8 +710,11 @@ Expected, from the plugin's install path:
 
 ```json
 {"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.0"}},"jsonrpc":"2.0","id":1}
-{"result":{"tools":[{"name":"list_projects", ...},{"name":"get_project", ...},{"name":"list_agents", ...},{"name":"list_templates", ...},{"name":"list_connections", ...},{"name":"get_backlog", ...},{"name":"get_activity", ...}]},"jsonrpc":"2.0","id":2}
+{"result":{"tools":[{"name":"list_projects", ...},{"name":"get_project", ...},{"name":"list_agents", ...},{"name":"list_templates", ...},{"name":"list_connections", ...},{"name":"get_backlog", ...},{"name":"get_activity", ...},{"name":"create_project", ...},{"name":"create_agent", ...},{"name":"create_template", ...},{"name":"update_template", ...},{"name":"apply_role", ...},{"name":"create_connection", ...},{"name":"send_message", ...}]},"jsonrpc":"2.0","id":2}
 ```
+
+Fourteen tools, reads first. The count is the quickest check that the build is
+current: a `dist/` from before the write verbs lists seven.
 
 The `serverInfo.name` in the first response is the string OpenClaw prefixes
 verbs with, so the tool reaching an agent is `singleintent__list_projects`.

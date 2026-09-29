@@ -20,7 +20,14 @@ import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { PRODUCT_SITE_URL, ProductError, ProductUpstreamError, getJson } from "./client.js";
+import {
+  PRODUCT_SITE_URL,
+  ProductConflictError,
+  ProductError,
+  ProductUpstreamError,
+  getJson,
+  sendJson,
+} from "./client.js";
 import { loadConfig, type Config } from "./config.js";
 
 let running: Server | undefined;
@@ -132,6 +139,102 @@ describe("the product answered — no link, and this is what can silently regres
     expect(error).toBeInstanceOf(ProductError);
     expect(error.message).not.toContain("singleintent.com");
     expect(error.message).toContain("did not return valid JSON");
+  }, 20_000);
+});
+
+/**
+ * The write side of the error surface: the two branches a read can never reach.
+ *
+ * Both are about what a caller should do next, which is the only thing an error on a
+ * write is for. A conflict means stop. A timeout means find out before repeating,
+ * because the write may have landed.
+ */
+describe("a write that conflicts", () => {
+  it("is its own type, so a caller can tell it from a broken product", async () => {
+    const config = await serving((respond) =>
+      respond(409, JSON.stringify({ error: "role already applied", status: "applied" })),
+    );
+    const error = await sendJson(config, "POST", "/api/agent-roles", { agentId: "a" }).catch(
+      (e: Error) => e,
+    );
+
+    expect(error).toBeInstanceOf(ProductConflictError);
+    // A subclass, so code that already catches ProductError still does.
+    expect(error).toBeInstanceOf(ProductError);
+  }, 20_000);
+
+  it("carries the product's own account of what already exists", async () => {
+    const config = await serving((respond) =>
+      respond(409, JSON.stringify({ error: "role already applied", status: "applied" })),
+    );
+    const error = await sendJson(config, "POST", "/api/agent-roles", {}).catch((e: Error) => e);
+
+    expect(error.message).toContain("role already applied");
+    expect(error.message).toContain("409");
+  }, 20_000);
+
+  it("says retrying cannot succeed, which is the point of separating it", async () => {
+    // This is the failure a model is most likely to answer by trying again.
+    const config = await serving((respond) => respond(409, "{}"));
+    const error = await sendJson(config, "POST", "/api/connections", {}).catch((e: Error) => e);
+
+    expect(error.message).toMatch(/retrying cannot succeed/);
+    expect(error.message).not.toContain(PRODUCT_SITE_URL);
+  }, 20_000);
+
+  it("does not make a conflict look like an upstream failure", async () => {
+    const config = await serving((respond) => respond(409, "{}"));
+    const error = await sendJson(config, "POST", "/api/connections", {}).catch((e: Error) => e);
+    expect(error).not.toBeInstanceOf(ProductUpstreamError);
+  }, 20_000);
+});
+
+describe("a write that timed out may still have been written", () => {
+  /** Nothing listening, so the deadline is reached rather than simulated. */
+  const stalling = async (): Promise<Config> => {
+    const server = createServer(() => {
+      // Accept the connection and never answer, which is what a long agent turn
+      // looks like from here.
+    });
+    running = server;
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    return { ...loadConfig({}), host: "127.0.0.1", port };
+  };
+
+  it.each(["POST", "PUT"] as const)("warns that a %s may still complete", async (method) => {
+    const config = await stalling();
+    const error = await sendJson(config, method, "/api/chat", {}, { timeoutMs: 150 }).catch(
+      (e: Error) => e,
+    );
+
+    expect(error).toBeInstanceOf(ProductError);
+    expect(error.message).toContain("timed out after 150ms");
+    expect(error.message).toContain("may still");
+    // The instruction that follows from it, without which the warning is noise.
+    expect(error.message).toMatch(/check with the matching read verb before retrying/);
+    expect(error.message).toContain("write twice");
+  }, 20_000);
+
+  it("says nothing of the kind on a read, which cannot have changed anything", async () => {
+    const config = await stalling();
+    const error = await getJson(config, "/api/projects", { timeoutMs: 150 }).catch(
+      (e: Error) => e,
+    );
+
+    expect(error.message).toContain("timed out after 150ms");
+    expect(error.message).not.toContain("may still");
+    expect(error.message).not.toContain("write twice");
+  }, 20_000);
+
+  it("says nothing of the kind when the connection was refused outright", async () => {
+    // Nothing was received, so there is nothing to have half-done. Warning here
+    // would teach a caller to distrust a failure that is unambiguous.
+    const config = { ...loadConfig({}), host: "127.0.0.1", port: await deadPort() };
+    const error = await sendJson(config, "POST", "/api/projects", {}).catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ProductError);
+    expect(error.message).not.toContain("may still");
   }, 20_000);
 });
 

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 import { SERVER_NAME, TOOLS, createServer } from "./mcp-server.js";
+import { NOT_REVERSIBLE } from "./verbs/write-args.js";
 
 const readJson = (relative: string): Record<string, unknown> =>
   JSON.parse(
@@ -49,6 +50,125 @@ describe("manifest wiring", () => {
  * `"joy-labs"` is rejected as a project id have to name it to test it, and they
  * are not published.
  */
+/**
+ * The write surface, held to the three promises its descriptions make.
+ *
+ * These are description tests, which is unusual and deliberate. A tool description is
+ * the only documentation a model reads before calling, and for these seven verbs the
+ * things it has to know — that this cannot be undone, that it costs an agent turn,
+ * that retrying will never work — are not inferable from the schema and are not
+ * recoverable after the call. A description that loses one of them is a real defect
+ * with no other detector.
+ */
+describe("the write verbs", () => {
+  const WRITE_VERBS = [
+    "create_project",
+    "create_agent",
+    "create_template",
+    "update_template",
+    "apply_role",
+    "create_connection",
+    "send_message",
+  ];
+
+  const tool = (name: string): (typeof TOOLS)[number] => {
+    const found = TOOLS.find((t) => t.name === name);
+    if (found === undefined) throw new Error(`no tool named ${name}`);
+    return found;
+  };
+
+  it("are all advertised, alongside the seven reads", () => {
+    for (const name of WRITE_VERBS) expect(TOOLS.map((t) => t.name)).toContain(name);
+    expect(TOOLS).toHaveLength(14);
+  });
+
+  it("each declare their required arguments, so a model cannot omit one", () => {
+    // Unlike the reads, where every argument is optional, a write with a missing
+    // argument is a wasted round trip at best.
+    for (const name of WRITE_VERBS) {
+      const required = (tool(name).inputSchema as { required?: string[] }).required ?? [];
+      expect(required.length, `${name} declares no required arguments`).toBeGreaterThan(0);
+    }
+  });
+
+  it("take snake_case arguments, matching the read verbs", () => {
+    for (const name of WRITE_VERBS) {
+      const properties = (tool(name).inputSchema as { properties?: Record<string, unknown> })
+        .properties ?? {};
+      for (const argument of Object.keys(properties)) {
+        expect(argument, `${name} takes ${argument}`).toBe(argument.toLowerCase());
+        expect(argument, `${name} takes ${argument}`).not.toMatch(/[A-Z]/);
+      }
+    }
+  });
+
+  /**
+   * Six of the seven cannot be undone, and each says so in the same words. The
+   * exception is `update_template`, which can be called again with the previous
+   * values — and it says *that*, so the absence is a statement rather than a gap.
+   */
+  it.each(["create_project", "create_agent", "create_template", "apply_role", "create_connection"])(
+    "%s says it cannot be undone, and why",
+    (name) => {
+      expect(tool(name).description).toContain(NOT_REVERSIBLE);
+    },
+  );
+
+  it("update_template says it is reversible rather than staying silent", () => {
+    const description = tool("update_template").description ?? "";
+    expect(description).not.toContain(NOT_REVERSIBLE);
+    expect(description).toMatch(/can be undone/);
+  });
+
+  it("send_message says the message survives a timeout, since resending repeats work", () => {
+    // The one irreversibility that is not about a stored record: the agent has
+    // already read it.
+    const description = tool("send_message").description ?? "";
+    expect(description).toMatch(/still delivered/);
+    expect(description).toMatch(/get_activity/);
+  });
+
+  it.each(["apply_role", "create_connection", "send_message"])(
+    "%s warns that it spends a real agent turn and can take minutes",
+    (name) => {
+      const description = tool(name).description ?? "";
+      expect(description).toMatch(/minutes/);
+      expect(description).toMatch(/turn|Blocks/);
+    },
+  );
+
+  it("apply_role says a second call can never succeed", () => {
+    // The verb most likely to be retried, so the description has to pre-empt it
+    // rather than leaving the 409 to teach it.
+    const description = tool("apply_role").description ?? "";
+    expect(description).toMatch(/once/);
+    expect(description).toMatch(/retrying never helps|always fails/);
+  });
+
+  it("create_connection says it is directed, so a caller knows one call is one way", () => {
+    expect(tool("create_connection").description).toMatch(/[Dd]irected/);
+  });
+
+  it("create_agent points at apply_role rather than leaving the role unmentioned", () => {
+    // The two fields that would have taken the product's onboarding path are not in
+    // this schema; the description has to say what to use instead.
+    const create = tool("create_agent");
+    const properties = (create.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
+    expect(Object.keys(properties)).toEqual(["name", "project_id", "workspace_subpath", "model"]);
+    expect(create.description).toMatch(/apply_role/);
+  });
+
+  it.each(["template_id", "content"])(
+    "create_agent's schema does not offer %s, which would strand an agent",
+    (field) => {
+      const properties = (tool("create_agent").inputSchema as {
+        properties?: Record<string, unknown>;
+      }).properties ?? {};
+      expect(Object.keys(properties)).not.toContain(field);
+    },
+  );
+});
+
 describe("the published surface carries no product internals", () => {
   const dir = fileURLToPath(new URL(".", import.meta.url));
 

@@ -21,6 +21,11 @@ import {
 import type { RequestOptions } from "./client.js";
 import { loadConfig, type Config } from "./config.js";
 import { SERVER_NAME, SERVER_VERSION } from "./names.js";
+import { applyRole } from "./verbs/apply-role.js";
+import { createAgent } from "./verbs/create-agent.js";
+import { createConnection } from "./verbs/create-connection.js";
+import { createProject } from "./verbs/create-project.js";
+import { createTemplate } from "./verbs/create-template.js";
 import { getActivity } from "./verbs/get-activity.js";
 import { getBacklog } from "./verbs/get-backlog.js";
 import { getProject } from "./verbs/get-project.js";
@@ -29,6 +34,9 @@ import { listConnections } from "./verbs/list-connections.js";
 import { listProjects } from "./verbs/list-projects.js";
 import { listTemplates } from "./verbs/list-templates.js";
 import { DEFAULT_LIMIT, MAX_LIMIT } from "./verbs/paging.js";
+import { sendMessage } from "./verbs/send-message.js";
+import { updateTemplate } from "./verbs/update-template.js";
+import { NOT_REVERSIBLE } from "./verbs/write-args.js";
 
 export { SERVER_NAME, SERVER_VERSION };
 
@@ -171,6 +179,194 @@ export const TOOLS: Tool[] = [
       properties: { ...pagingSchema("sessions") },
     },
   },
+
+  // The write verbs. Each is one API call: these descriptions and the argument
+  // validation behind them are the whole of what this layer adds.
+  //
+  // Three things recur in them on purpose. Irreversibility is stated wherever it
+  // holds, in one shared sentence, because the product has no delete route and a
+  // caller cannot discover that by trying. The verbs that spend a real agent turn
+  // say so, because that cost is invisible from a schema. And where a call can only
+  // ever succeed once, the description says so rather than leaving a caller to
+  // learn it from a 409 it has already spent a turn to reach.
+  {
+    name: "create_project",
+    description:
+      "Create a SingleIntent project. Takes a display name and the working " +
+      "directory it maps to; returns the created project including the id every " +
+      "other verb's project_id refers to. Starts with no member agents. The " +
+      "working directory is recorded exactly as given — not created, not checked " +
+      "and not resolved — so a wrong path is stored and surfaces later as agents " +
+      `pointed somewhere wrong. ${NOT_REVERSIBLE}`,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "working_directory"],
+      properties: {
+        name: { type: "string", description: "Display name for the project." },
+        working_directory: {
+          type: "string",
+          description:
+            "Absolute path this project maps to. Recorded as given; the product " +
+            "does not create it or verify that it exists.",
+        },
+      },
+    },
+  },
+  {
+    name: "create_agent",
+    description:
+      "Register an agent and add it to a SingleIntent project. Returns the new " +
+      "agentId, which is what every other verb's agent_id takes. The workspace is " +
+      "derived from the project's working directory and is fixed permanently at " +
+      "creation, as is the name — neither is editable afterwards, so a wrong one " +
+      "means creating another agent. The new agent has no role; use apply_role to " +
+      `give it one. ${NOT_REVERSIBLE}`,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "project_id"],
+      properties: {
+        name: { type: "string", description: "Display name for the agent. Permanent." },
+        project_id: {
+          type: "string",
+          description:
+            "UUID of the project to create it in, as returned by list_projects. " +
+            "The agent is added to that project and its workspace comes from it.",
+        },
+        workspace_subpath: {
+          type: "string",
+          description:
+            "Optional path relative to the project's working directory; must stay " +
+            "inside it. Defaults to the working directory itself. Permanent.",
+        },
+        model: {
+          type: "string",
+          description: "Optional model override. Defaults to the product's choice.",
+        },
+      },
+    },
+  },
+  {
+    name: "create_template",
+    description:
+      "Create an agent-role template. The content is the role text an agent is " +
+      "later told to adopt as its own identity, used verbatim and never rewritten, " +
+      "so it should read as instructions to that agent. Returns the created " +
+      "template including the id apply_role takes. Its text stays editable through " +
+      `update_template, but the template itself cannot be removed. ${NOT_REVERSIBLE}`,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "content"],
+      properties: {
+        name: { type: "string", description: "Display name for the template." },
+        content: {
+          type: "string",
+          description:
+            "The role text itself, applied verbatim when the template is given to " +
+            "an agent. This is the payload of the template, not a summary of it.",
+        },
+      },
+    },
+  },
+  {
+    name: "update_template",
+    description:
+      "Update an agent-role template by id. Name and content are independent and " +
+      "each optional: omit one to leave it unchanged, and the response says which " +
+      "were sent. A call with neither is refused rather than rewriting nothing. " +
+      "This does not change agents that already carry this role — applying a " +
+      "template copies its text onto the agent at that moment, so an edit only " +
+      "changes what future applications say. It is the one write verb here that " +
+      "can be undone: call it again with the previous values, which means reading " +
+      "them first if you want to be able to.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["template_id"],
+      properties: {
+        template_id: {
+          type: "string",
+          description: "UUID of the template to update, as returned by list_templates.",
+        },
+        name: { type: "string", description: "New display name. Omit to leave unchanged." },
+        content: { type: "string", description: "New role text. Omit to leave unchanged." },
+      },
+    },
+  },
+  {
+    name: "apply_role",
+    description:
+      "Give an agent its role from a template. The agent is asked to store the " +
+      "template's text as its own identity, which spends a real agent turn and can " +
+      "take minutes. An agent can only ever be roled once: any existing role " +
+      "record blocks this whatever state it is in, and none can be cleared, so a " +
+      "second call always fails and retrying never helps. Check the template is " +
+      "the right one before calling. The role is a copy taken now — editing the " +
+      `template afterwards will not reach this agent. ${NOT_REVERSIBLE}`,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["agent_id", "template_id"],
+      properties: {
+        agent_id: {
+          type: "string",
+          description: "Id of the agent to give the role to, as returned by list_agents.",
+        },
+        template_id: {
+          type: "string",
+          description: "UUID of the template whose text becomes the agent's role.",
+        },
+      },
+    },
+  },
+  {
+    name: "create_connection",
+    description:
+      "Connect one agent to another so they are aware of each other. Directed: " +
+      "this connects from to to, not both ways, and the reverse is a separate call " +
+      "rather than a free mirror. Wakes the from agent to introduce itself, so it " +
+      "spends a real agent turn and is the slowest verb here — minutes, not " +
+      "seconds. A connection is mutual awareness for later reference, not a task: " +
+      "the product explicitly tells the two agents not to start or discuss work in " +
+      "that exchange. Fails if this exact direction already exists; the reverse " +
+      `direction is a different connection and never conflicts. ${NOT_REVERSIBLE}`,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["from", "to"],
+      properties: {
+        from: {
+          type: "string",
+          description: "Agent id the connection points from. This agent is woken.",
+        },
+        to: { type: "string", description: "Agent id the connection points to." },
+      },
+    },
+  },
+  {
+    name: "send_message",
+    description:
+      "Send a message to an agent and wait for its reply. Blocks for that agent's " +
+      "whole turn, which can take minutes; there is no fire-and-forget variant. If " +
+      "it times out the message was still delivered and the agent is probably " +
+      "still working — check get_activity rather than resending, because resending " +
+      "asks it to do the same thing twice. A null reply alongside a terminal status " +
+      "means the turn finished and produced no text, which is not an error.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["agent_id", "message"],
+      properties: {
+        agent_id: {
+          type: "string",
+          description: "Id of the agent to message, as returned by list_agents.",
+        },
+        message: { type: "string", description: "The message text to send." },
+      },
+    },
+  },
 ];
 
 /**
@@ -253,6 +449,37 @@ export function createServer(config: Config): Server {
         },
         options,
       ),
+    create_project: (args, options) =>
+      createProject(
+        config,
+        { name: args.name, workingDirectory: args.working_directory },
+        options,
+      ),
+    create_agent: (args, options) =>
+      createAgent(
+        config,
+        {
+          name: args.name,
+          projectId: args.project_id,
+          workspaceSubpath: args.workspace_subpath,
+          model: args.model,
+        },
+        options,
+      ),
+    create_template: (args, options) =>
+      createTemplate(config, { name: args.name, content: args.content }, options),
+    update_template: (args, options) =>
+      updateTemplate(
+        config,
+        { templateId: args.template_id, name: args.name, content: args.content },
+        options,
+      ),
+    apply_role: (args, options) =>
+      applyRole(config, { agentId: args.agent_id, templateId: args.template_id }, options),
+    create_connection: (args, options) =>
+      createConnection(config, { from: args.from, to: args.to }, options),
+    send_message: (args, options) =>
+      sendMessage(config, { agentId: args.agent_id, message: args.message }, options),
   };
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
