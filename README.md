@@ -183,25 +183,13 @@ reasoning that put `total` and `truncated` alongside `projects`.
 counting it here would leave the question unanswered again. If it ever needs
 paging, that is a separate verb rather than a shape conditional on arguments.
 
-**This selects from the list route; it does not fetch a detail route.** There is
-no detail route to fetch: the product matches `/api/projects` for GET and POST
-only, and `GET /api/projects/<uuid>` answers **404**. (`lib/joylabs-projects.js`
-does export `getProject(id)`, but it is internal and never routed.) So the one
-round trip goes to `/api/projects` and the selection happens in the plugin. If a
-detail route lands later the swap is confined to `getProject()` in
-`src/verbs/get-project.ts`, which says so in a comment.
-
-> **Why a retired name appears in current code, and the break it sets up.**
-> `lib/joylabs-projects.js` and `lib/joylabs-ids.js` are the product repo's real,
-> current filenames; that repo has not been renamed even though this plugin's
-> brand was. They are accurate citations, not stale references, and the
-> retired-name guard scopes to this plugin's own identity rather than failing on
-> them — widening it would only teach whoever hit it to weaken the test.
->
-> **Known future break:** when the product repo is renamed, these citations go
-> stale in the worse direction — pointing at files that no longer exist rather
-> than merely carrying an old name. Whoever does that rename should re-point them
-> here, in `src/verbs/get-project.ts` and in `src/verbs/list-projects.ts`.
+**This reads the whole collection, not one project.** The product's API exposes
+no per-project route — `GET /api/projects/<uuid>` answers **404** — so this verb
+requests `/api/projects` and selects the id from the result. The consequence for
+a caller is a cost one, and it is the reason to say it here: `get_project` is no
+cheaper than `list_projects`, and calling it once per id walks the entire
+collection once per id. To detail several projects, read the list once and work
+from that.
 
 **Two distinct failures, deliberately not collapsed into one:**
 
@@ -298,11 +286,15 @@ for nothing. Call `list_agents` if you want the agents behind the ids.
 
 Every stored field, including `description`.
 
-**Read-only by design, not by omission.** `~/.joylabs/backlog.json` is written
-only by agents through their own file tools — no API, no locking. A write verb
-would add a second uncoordinated writer, and last-write-wins on a whole-file
-rewrite loses items silently. For the same reason **a stale read is not an
-error**: nothing here validates freshness or retries to chase it.
+**Read-only, and not because a write verb was left out.** `/api/backlog` is a
+GET route with no write counterpart on the product's API, so there is nothing for
+this connector to call. Every verb here is an API call and nothing more; a
+backlog write would have to be something else.
+
+**A stale read is not an error.** The backlog changes without any API call being
+made, so what comes back can already be out of date. Nothing here checks
+freshness or retries to chase it. Treat the response as a snapshot taken when you
+asked, not as a value that stays true.
 
 `description` survives where `list_templates` cut `content`, by this
 discriminator: *does the row still answer the verb's question without the field?*

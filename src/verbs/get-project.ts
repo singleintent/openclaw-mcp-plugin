@@ -10,31 +10,26 @@
  *
  * ## Why this selects from the list rather than fetching a detail route
  *
- * The product has no per-project route. `web/server.mjs` matches `/api/projects`
- * for GET and POST only, and `GET /api/projects/<uuid>` answers 404 — verified
- * against the running product, not inferred. `lib/joylabs-projects.js` does
- * export `getProject(id)`, but it is internal and never routed.
+ * The API exposes no per-project route: `GET /api/projects/<uuid>` answers 404 —
+ * verified against the running product, not inferred. So the one round trip this
+ * verb makes is to `/api/projects`, and the selection happens here.
  *
- * So the one round trip this verb makes is to `/api/projects`, and the selection
- * happens here. If a detail route lands later, the swap is confined to
- * `getProject()` below: replace the list fetch and the `select` call with a fetch
- * of the new path, and keep `detail()` and the not-found behaviour as they are.
- * This note exists so that swap is obvious rather than archaeological.
+ * That is a cost a caller can see, so the README states it: this verb is no
+ * cheaper than `list_projects`, and detailing n projects reads the collection n
+ * times.
  *
- * **On the retired name in the paths above and below.** `lib/joylabs-*.js` is not
- * a stale reference to fix: those are the product repo's real, current filenames,
- * and that repo has not been renamed even though this plugin's brand was. The
- * retired-name guard in `src/mcp-server.test.ts` deliberately scopes to this
- * plugin's own identity — package, manifest id, env prefix — rather than to
- * truthful citations of another repository. Do not vague these out.
+ * If a detail route lands later, the swap is confined to `getProject()` below:
+ * replace the list fetch and the `select` call with a fetch of the new path, and
+ * keep `detail()` and the not-found behaviour as they are. This note exists so
+ * that swap is obvious rather than archaeological.
  */
 import { getJson, type RequestOptions } from "../client.js";
 import type { Config } from "../config.js";
 
 /**
- * The product's own project-id pattern (`lib/joylabs-ids.js`). Project ids are
- * always `randomUUID()`, and the product's `assertProjectId` rejects anything
- * else before it can reach a file path.
+ * The shape of every project id the product mints: a v4 UUID. Checked here so a
+ * structurally impossible id is refused before it costs a request, and so the
+ * refusal names the argument rather than arriving as a 400 from the product.
  */
 const PROJECT_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

@@ -3,7 +3,7 @@
  *
  * Gateway-backed, so it fails `502` rather than a store route's `500`. It returns
  * running sessions plus those that ended inside the product's recently-ended
- * window (`lib/joylabs-activity.js`).
+ * window — the window is the product's choice and is not a parameter here.
  *
  * ## `now` is passed through verbatim, and that is the whole design of this verb
  *

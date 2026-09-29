@@ -96,19 +96,15 @@ export function assertPageInput(input: PageInput): void {
 }
 
 /**
- * OpenClaw's own agent-id pattern, which the product mirrors in
- * `lib/joylabs-ids.js` as `AGENT_ID_RE`. Every id the Gateway can mint passes.
- *
- * That path carries a retired name because it is the product repo's real, current
- * filename and that repo has not been renamed; see the note in
- * `src/verbs/get-project.ts` before "fixing" it.
+ * OpenClaw's own agent-id pattern, which the product applies to every agent id it
+ * accepts. Every id the Gateway can mint passes, and nothing containing `/`, `.`
+ * or `:` does.
  */
 export const AGENT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
 /**
- * The product's own project-id pattern (`lib/joylabs-ids.js`). Project ids are
- * always `randomUUID()`, and the product's `assertProjectId` rejects anything
- * else before it can reach a file path.
+ * The shape of every project id the product mints: a v4 UUID. Anything else is
+ * refused by the product too, so checking here only moves the refusal earlier.
  */
 export const PROJECT_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

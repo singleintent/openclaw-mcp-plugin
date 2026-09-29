@@ -1,21 +1,20 @@
 /**
  * `get_backlog` — `GET /api/backlog` (`web/server.mjs:573`).
  *
- * Store-backed, failing `500`, and the store is a single file:
- * `~/.joylabs/backlog.json`.
+ * Store-backed, so it fails `500` rather than the Gateway routes' `502`.
  *
  * ## Read-only, permanently, and not because nobody got to the write verb
  *
- * That file is written **only** by agents through their own file tools — no API,
- * no locking (`lib/joylabs-backlog.js`). The product itself only displays it. A
- * write verb here would introduce a second writer with no coordination against
- * the first, and last-write-wins on a whole-file rewrite loses items silently.
- * So there is no write verb, and this is a property of the design rather than a
- * gap in the implementation.
+ * `/api/backlog` is a GET route and the product's API offers no write
+ * counterpart, so there is nothing here to call. Every verb in this connector is
+ * an API call and nothing more, so the absence of an endpoint is the whole answer:
+ * a backlog write is a product change, not a verb waiting to be written.
  *
- * The same fact makes a **stale read not an error**. A caller can read this and
- * have an agent rewrite the file a moment later; that is the expected condition,
- * not a failure, and nothing here validates freshness or retries to chase it.
+ * The backlog also changes **without** any API call being made, which makes a
+ * **stale read not an error**. A caller can read this and have the contents
+ * change a moment later; that is the expected condition, not a failure, and
+ * nothing here validates freshness or retries to chase it. The response is a
+ * snapshot taken when it was asked for, not a value that stays true.
  *
  * ## Named `get_` rather than `list_`, and still a paged list
  *
