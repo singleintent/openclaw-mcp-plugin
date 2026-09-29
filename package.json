@@ -22,8 +22,10 @@
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "prepack": "npm run clean && npm run build",
+    "prepublishOnly": "node scripts/preflight.mjs",
     "pretest": "npm run build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "release": "npm publish"
   },
   "files": [
     "dist",

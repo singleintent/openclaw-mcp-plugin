@@ -3,3 +3,8 @@ dist/
 *.tgz
 *.log
 .DS_Store
+
+# Agent harness scratch, not project content. It never shipped (the files
+# allowlist excludes it) but it kept the tree permanently dirty, which the
+# publish preflight reads as a reason to refuse.
+memory/
