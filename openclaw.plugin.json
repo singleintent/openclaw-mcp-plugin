@@ -15,7 +15,10 @@
     "singleintent": {
       "transport": "stdio",
       "command": "node",
-      "args": ["./dist/mcp-server.js"]
+      "args": ["./dist/mcp-server.js"],
+      "env": {
+        "SINGLEINTENT_CONFIG": "${CLAUDE_PLUGIN_ROOT}/instance.json"
+      }
     }
   }
 }

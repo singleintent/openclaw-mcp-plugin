@@ -370,11 +370,24 @@ export const TOOLS: Tool[] = [
 ];
 
 /**
- * Config is read once per process. The subprocess is short-lived relative to a
- * config change, and OpenClaw disposes cached MCP runtimes on reload, so a new
- * process picks up new config rather than this one watching for it.
+ * Config is resolved per tool call, not once at startup.
+ *
+ * The file this process reads is written by the product as the last step of
+ * installing this plugin, and the Gateway may already have started this process
+ * by then — so a startup read can lose a race it cannot see, and would then serve
+ * every call of its lifetime against the wrong port. Reading per call also means a
+ * product that moves port, or is reinstalled against a different instance, is
+ * picked up without this process having to be recycled for it.
+ *
+ * The cost is one `readFileSync` of a small file per call, against a tool call
+ * that is about to make an HTTP request. The benefit is that there is no window
+ * in which this process is confidently wrong.
+ *
+ * `resolveConfig` throwing is deliberately not special-cased: it happens inside
+ * the same try that wraps every handler, so a malformed or invalid file comes
+ * back as a tool error naming the file rather than killing the transport.
  */
-export function createServer(config: Config): Server {
+export function createServer(resolveConfig: () => Config): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} } },
@@ -387,11 +400,15 @@ export function createServer(config: Config): Server {
    * modules speak camelCase. That mapping is the only thing each entry does, so
    * a table keeps it visible as a table instead of hiding it in a chain of ifs
    * that grows a branch per verb.
+   *
+   * Built per call because it closes over the config resolved for that call.
    */
-  const handlers: Record<
+  const buildHandlers = (
+    config: Config,
+  ): Record<
     string,
     (args: Record<string, unknown>, options: RequestOptions) => Promise<unknown>
-  > = {
+  > => ({
     list_projects: (args, options) =>
       listProjects(
         config,
@@ -480,12 +497,12 @@ export function createServer(config: Config): Server {
       createConnection(config, { from: args.from, to: args.to }, options),
     send_message: (args, options) =>
       sendMessage(config, { agentId: args.agent_id, message: args.message }, options),
-  };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     try {
-      const handler = handlers[request.params.name];
+      const handler = buildHandlers(resolveConfig())[request.params.name];
       if (handler === undefined) {
         throw new Error(`unknown tool: ${request.params.name}`);
       }
@@ -509,7 +526,9 @@ export function createServer(config: Config): Server {
 }
 
 export async function main(): Promise<void> {
-  const server = createServer(loadConfig());
+  // `loadConfig` itself is the resolver: it reads process.env on each call, so a
+  // config written after this process started is still seen.
+  const server = createServer(() => loadConfig());
   await server.connect(new StdioServerTransport());
 }
 

@@ -1,8 +1,12 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "./config.js";
+import { type Config, loadConfig } from "./config.js";
+import { ENV_PREFIX, INSTANCE_FILE_NAME, envVar } from "./names.js";
 import { SERVER_NAME, TOOLS, createServer } from "./mcp-server.js";
 import { NOT_REVERSIBLE } from "./verbs/write-args.js";
 
@@ -25,6 +29,31 @@ describe("manifest wiring", () => {
       command: "node",
       args: ["./dist/mcp-server.js"],
     });
+  });
+
+  /**
+   * The one line that makes the config file per-instance, and the one token that
+   * can do it. `${CLAUDE_PLUGIN_ROOT}` expands to this package's install root;
+   * `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` do not expand for an npm-installed
+   * native plugin and would be written into the environment literally, which is a
+   * path no file will ever be at. This asserts the working token is the one used.
+   */
+  it("hands the subprocess a per-instance config path through manifest env", () => {
+    const server = (manifest.mcpServers as Record<string, { env?: Record<string, string> }>)[
+      SERVER_NAME
+    ];
+    expect(server.env).toEqual({
+      [envVar("CONFIG")]: `\${CLAUDE_PLUGIN_ROOT}/${INSTANCE_FILE_NAME}`,
+    });
+  });
+
+  it("uses no placeholder that stays literal for this plugin format", () => {
+    const env = JSON.stringify(
+      (manifest.mcpServers as Record<string, { env?: Record<string, string> }>)[SERVER_NAME].env ??
+        {},
+    );
+    expect(env).not.toMatch(/\$\{PLUGIN_ROOT\}/);
+    expect(env).not.toMatch(/\$\{PLUGIN_DATA\}/);
   });
 
   // Two retired names now: the original code name, and the brand this repo
@@ -215,7 +244,7 @@ describe("the published surface carries no product internals", () => {
 
 describe("server construction", () => {
   it("builds without a transport", () => {
-    expect(createServer(loadConfig({}))).toBeDefined();
+    expect(createServer(() => loadConfig({}))).toBeDefined();
   });
 
   it("advertises every verb with an input schema", () => {
@@ -225,6 +254,97 @@ describe("server construction", () => {
       // additionalProperties:false keeps a typo in an argument name an error
       // rather than a silently ignored field.
       expect(tool.inputSchema).toMatchObject({ additionalProperties: false });
+    }
+  });
+});
+
+/**
+ * The product writes the config file as the last step of installing this plugin,
+ * and the Gateway may already have started this process by then. A startup read
+ * would lose that race silently and then be wrong for its whole lifetime, so the
+ * read happens per call. These drive a real client over the in-memory transport
+ * pair rather than asserting on internals, because what matters is what a caller
+ * receives.
+ */
+describe("config is resolved per tool call", () => {
+  const scratch = (): string => mkdtempSync(join(tmpdir(), "si-callsite-"));
+
+  const connected = async (
+    resolveConfig: () => Config,
+  ): Promise<{ call: () => Promise<Record<string, unknown>>; close: () => Promise<void> }> => {
+    const server = createServer(resolveConfig);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "si-test", version: "0.0.0" });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    return {
+      call: async () =>
+        (await client.callTool({ name: "list_projects", arguments: {} })) as Record<
+          string,
+          unknown
+        >,
+      close: async () => {
+        await client.close();
+        await server.close();
+      },
+    };
+  };
+
+  /** The text of a tool result, whatever its content shape. */
+  const textOf = (result: Record<string, unknown>): string =>
+    JSON.stringify(result.content ?? result);
+
+  it("does not resolve config while constructing the server", () => {
+    expect(() =>
+      createServer(() => {
+        throw new Error("resolved too early");
+      }),
+    ).not.toThrow();
+  });
+
+  it("surfaces a resolver failure as a tool error, not a dead transport", async () => {
+    const { call, close } = await connected(() => {
+      throw new Error("instance.json is not valid JSON: boom");
+    });
+    try {
+      const first = await call();
+      expect(first.isError).toBe(true);
+      expect(textOf(first)).toContain("not valid JSON");
+      // The transport must still be alive: a bad file is a per-call failure, so a
+      // corrected file would be picked up without the Gateway recycling anything.
+      const second = await call();
+      expect(second.isError).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+
+  it("reads a config file written after the server was constructed", async () => {
+    const path = join(scratch(), "instance.json");
+    const { call, close } = await connected(() => loadConfig({ [`${ENV_PREFIX}CONFIG`]: path }));
+    try {
+      // The file does not exist yet, which is the state the race produces.
+      writeFileSync(path, JSON.stringify({ host: "written.late.invalid" }));
+      const result = await call();
+      expect(result.isError).toBe(true);
+      // The host could only come from the file, and the file was written after
+      // construction — so the read happened at call time.
+      expect(textOf(result)).toContain("written.late.invalid");
+    } finally {
+      await close();
+    }
+  });
+
+  it("names the file when it is present but malformed", async () => {
+    const path = join(scratch(), "instance.json");
+    writeFileSync(path, "{ not json");
+    const { call, close } = await connected(() => loadConfig({ [`${ENV_PREFIX}CONFIG`]: path }));
+    try {
+      const result = await call();
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain(path);
+      expect(textOf(result)).toContain("not valid JSON");
+    } finally {
+      await close();
     }
   });
 });

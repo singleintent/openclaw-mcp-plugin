@@ -87,6 +87,36 @@ describe("nothing answered — the one branch that gets the link", () => {
     expect(error).toBeInstanceOf(ProductError);
     expect(error).not.toBeInstanceOf(ProductUpstreamError);
   }, 20_000);
+
+  /**
+   * The failure this exists for: the manifest named a config file, the product has
+   * not written it, and the port in the message is therefore this plugin's default
+   * rather than anyone's instance. Without the sentence the message is accurate and
+   * useless — it names a port that looks configured, because a default port and a
+   * correct port are the same integer.
+   */
+  it("says the instance binding is missing when a named file is absent", async () => {
+    const config: Config = {
+      ...loadConfig({}),
+      host: "127.0.0.1",
+      port: await deadPort(),
+      configFile: { path: "/nowhere/instance.json", present: false, explicit: true },
+    };
+    const error = await getJson(config, "/api/projects").catch((e: Error) => e);
+    expect(error.message).toContain("No instance binding was found at /nowhere/instance.json");
+    expect(error.message).toContain("built-in default");
+  }, 20_000);
+
+  it("stays quiet when no config file was named", async () => {
+    const config: Config = {
+      ...loadConfig({}),
+      host: "127.0.0.1",
+      port: await deadPort(),
+      configFile: { path: "/nowhere/config.json", present: false, explicit: false },
+    };
+    const error = await getJson(config, "/api/projects").catch((e: Error) => e);
+    expect(error.message).not.toContain("No instance binding");
+  }, 20_000);
 });
 
 describe("the product answered — no link, and this is what can silently regress", () => {

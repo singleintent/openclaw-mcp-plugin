@@ -1,23 +1,49 @@
 /**
  * Config resolution for the MCP subprocess.
  *
- * The subprocess resolves its own config because plugin config cannot reach it.
- * Three paths were tested against OpenClaw 2026.9.5 and all are closed: manifest
- * `mcpServers.env` takes no templating, the only runtime MCP hook resolves
- * `url`/`headers` for HTTP transports rather than stdio env, and the child does
- * not inherit the Gateway environment — it receives exactly HOME, LOGNAME, PATH,
- * SHELL, USER and __CF_USER_TEXT_ENCODING, plus whatever the server definition
- * declares.
+ * Plugin config cannot reach this subprocess, but the manifest can hand it a
+ * path, and that is how the config file becomes per-instance. Measured against
+ * OpenClaw 2026.9.5:
  *
- * Overriding `mcp.servers.singleintent` in openclaw.json is NOT the intended
- * path: that override replaces the manifest definition wholesale instead of
- * merging, so setting only `env` there drops `command` and OpenClaw skips the
- * server with "command is missing and its url is missing" — a silent
- * disabling. It remains available for consumers who restate the whole block.
+ *  - Manifest `mcpServers.env` values ARE templated, by exactly one token.
+ *    `${CLAUDE_PLUGIN_ROOT}` expands to this package's own install root, which is
+ *    inside the engine's state directory, so each engine's copy of this plugin
+ *    resolves a different path. The loader knows two other tokens,
+ *    `${PLUGIN_ROOT}` and `${PLUGIN_DATA}`, and both stay literal here: they are
+ *    gated on a plugin-data directory that only Agent-Plugins-format bundles
+ *    (root `plugin.json` plus `mcp.json`) are given, and that format cannot be
+ *    installed from npm — the npm install path validates `openclaw.extensions`
+ *    and never reaches the bundle branch. An earlier revision of this comment
+ *    said `env` took no templating; that was measured with `${PLUGIN_ROOT}`,
+ *    which genuinely does nothing, and the conclusion was wrong.
+ *  - The child does not inherit the Gateway environment. It receives exactly
+ *    HOME, LOGNAME, PATH, SHELL, USER and __CF_USER_TEXT_ENCODING, plus whatever
+ *    the server definition declares.
+ *  - The only runtime MCP hook resolves `url`/`headers` for HTTP transports
+ *    rather than stdio env.
+ *
+ * Overriding `mcp.servers.singleintent` in openclaw.json replaces the manifest
+ * definition wholesale rather than merging: the manifest-derived map and the
+ * configured map are combined by a shallow spread keyed by server name, so an
+ * override that sets only `env` yields a definition with no `command` and the
+ * server is skipped with "command is missing and its url is missing" — a silent
+ * disabling. `openclaw config set` ACCEPTS such an entry; a write succeeding says
+ * nothing about the server resolving, and the two layers must not be confused.
+ * The route stays available to a consumer who restates the whole block.
+ *
+ * The file the manifest names lives inside the install root, so a reinstall
+ * removes it: the managed npm project directory is content-addressed and a new
+ * version gets a new directory. That is accepted rather than overlooked. Install
+ * is the moment the binding is made, the product rewrites the file as the last
+ * step of install, and its health check reports the gap in between. Nothing here
+ * treats an absent file as fatal — see `configFile` on Config for what is
+ * recorded instead.
  *
  * Precedence, highest first:
- *   1. environment variables (manifest `env` supplies HOST and PORT defaults)
- *   2. the config file, at $SINGLEINTENT_CONFIG or $HOME/.singleintent/config.json
+ *   1. environment variables
+ *   2. the config file, at $SINGLEINTENT_CONFIG — which the manifest points at
+ *      this package's install root — or $HOME/.singleintent/config.json when
+ *      nothing sets it
  *   3. the built-in defaults below
  */
 import { readFileSync } from "node:fs";
@@ -55,6 +81,33 @@ export type Config = {
   token?: string;
   /** Where each value came from, for diagnostics. */
   sources: Record<string, string>;
+  /** The file consulted, and whether it was there. */
+  configFile: ConfigFileOrigin;
+};
+
+/**
+ * Provenance for the config file, carried so a failure can name it.
+ *
+ * `present: false` with `explicit: true` is the one combination worth acting on,
+ * and it is why this is recorded rather than inferred at the call site: something
+ * deliberately pointed this process at a file and the file is not there, so the
+ * port in use is the built-in default — which belongs to whichever product
+ * instance happens to hold it, not to no instance at all. That is strictly worse
+ * than having no port, and it is invisible from the values alone, because a
+ * defaulted port and a correctly-defaulted port are the same integer.
+ *
+ * Deliberately not an error at load time. The default path is unset for anyone
+ * who installed this plugin without the product, and for them an absent file is
+ * normal; failing closed would break that install to protect a case this process
+ * cannot detect anyway. Whether the port reaches the right instance is only
+ * answerable by the product, and its health check is what answers it.
+ */
+export type ConfigFileOrigin = {
+  path: string;
+  /** False when the file was absent, which is not an error. */
+  present: boolean;
+  /** True when $SINGLEINTENT_CONFIG named the path, rather than the default. */
+  explicit: boolean;
 };
 
 type FileConfig = {
@@ -66,13 +119,15 @@ type FileConfig = {
 export const configFilePath = (env: NodeJS.ProcessEnv = process.env): string =>
   env[envVar("CONFIG")] ?? join(homedir(), CONFIG_DIR_NAME, "config.json");
 
-function readConfigFile(path: string): FileConfig {
+function readConfigFile(path: string): { file: FileConfig; present: boolean } {
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return {}; // Absent is normal: env and defaults suffice.
+    // Absent is normal: env and defaults suffice. The absence is reported rather
+    // than swallowed, so a later failure can say the file was looked for.
+    if (code === "ENOENT") return { file: {}, present: false };
     throw new Error(`cannot read config file ${path}: ${String(error)}`);
   }
   let parsed: unknown;
@@ -86,7 +141,7 @@ function readConfigFile(path: string): FileConfig {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`config file ${path} must contain a JSON object`);
   }
-  return parsed as FileConfig;
+  return { file: parsed as FileConfig, present: true };
 }
 
 function resolvePort(value: unknown, origin: string): number {
@@ -101,7 +156,12 @@ function resolvePort(value: unknown, origin: string): number {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const path = configFilePath(env);
-  const file = readConfigFile(path);
+  const { file, present } = readConfigFile(path);
+  const configFile: ConfigFileOrigin = {
+    path,
+    present,
+    explicit: env[envVar("CONFIG")] !== undefined,
+  };
   const sources: Record<string, string> = {};
 
   let host = DEFAULT_HOST;
@@ -130,7 +190,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const token = resolveToken(env, file, path, sources);
 
-  return { host, port, ...(token === undefined ? {} : { token }), sources };
+  return { host, port, ...(token === undefined ? {} : { token }), sources, configFile };
 }
 
 /**

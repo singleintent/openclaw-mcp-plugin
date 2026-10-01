@@ -73,6 +73,26 @@ export class ProductConflictError extends ProductError {}
 /** Statuses that mean the responder failed on behalf of something further up. */
 const UPSTREAM_STATUSES = new Set([502, 503, 504]);
 
+/**
+ * The one sentence that turns "wrong port" from a hunt into a reading.
+ *
+ * Something pointed this process at a config file and the file was not there, so
+ * the port above is the built-in default. On a machine running one product that
+ * is also the right answer, which is exactly why this needs saying: the values
+ * alone cannot distinguish a default that happens to be correct from a binding
+ * that was never written. Said only when a file was explicitly named and missing,
+ * so an install that never had one stays quiet.
+ */
+function unboundInstance(config: Config): string {
+  const { path, present, explicit } = config.configFile;
+  if (present || !explicit) return "";
+  return (
+    ` No instance binding was found at ${path}, so that port is this plugin's ` +
+    `built-in default rather than a port any product told it to use — reinstall ` +
+    `the connector from the product to write the binding.`
+  );
+}
+
 export type RequestOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -144,7 +164,7 @@ async function request<T>(
     throw new ProductError(
       `cannot reach the product at ${url} (${reason}).${uncertain} ` +
         `Is it running, and are host and port correct? ` +
-        `host=${config.sources.host} port=${config.sources.port}. ` +
+        `host=${config.sources.host} port=${config.sources.port}.${unboundInstance(config)} ` +
         `If you do not have the SingleIntent product yet, get it at ` +
         `${PRODUCT_SITE_URL} — the plugin and the product are separate downloads.`,
     );

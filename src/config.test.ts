@@ -30,6 +30,36 @@ describe("defaults", () => {
     expect(() => loadConfig(bare())).not.toThrow();
   });
 
+  /**
+   * Absent-but-named is the state a fresh install passes through, and the state a
+   * reinstall leaves behind until the product rewrites the file. It is recorded
+   * rather than thrown on, because this process cannot tell a default port that
+   * happens to be right from one that is wrong — only the product can — and
+   * failing closed would break an install that never had a file at all.
+   */
+  it("records that a named config file was absent", () => {
+    const path = join(scratch(), "instance.json");
+    const config = loadConfig({ [`${ENV_PREFIX}CONFIG`]: path });
+    expect(config.configFile).toEqual({ path, present: false, explicit: true });
+    expect(config.port).toBe(DEFAULT_PORT);
+  });
+
+  it("records a present config file as present", () => {
+    const path = join(scratch(), "instance.json");
+    writeFileSync(path, JSON.stringify({ port: 4321 }));
+    expect(loadConfig({ [`${ENV_PREFIX}CONFIG`]: path }).configFile).toEqual({
+      path,
+      present: true,
+      explicit: true,
+    });
+  });
+
+  it("marks the default path as not explicit", () => {
+    // No SINGLEINTENT_CONFIG: whatever the default path resolves to, nothing
+    // pointed this process at it, so an absent file there means nothing is wrong.
+    expect(loadConfig({}).configFile.explicit).toBe(false);
+  });
+
   it("builds a loopback base URL", () => {
     expect(baseUrl(loadConfig(bare()))).toBe(`http://${DEFAULT_HOST}:${DEFAULT_PORT}`);
   });

@@ -12,8 +12,10 @@ below is verified against OpenClaw 2026.9.5 and a running product.
 
 The server resolves its own configuration. Precedence, highest first:
 
-1. **Environment variables** — the manifest supplies `HOST` and `PORT` defaults
-2. **A config file** — `$SINGLEINTENT_CONFIG`, else `$HOME/.singleintent/config.json`
+1. **Environment variables**
+2. **A config file** — `$SINGLEINTENT_CONFIG`, which the manifest points at
+   `instance.json` inside this package's own install root, else
+   `$HOME/.singleintent/config.json` when nothing sets it
 3. **Built-in defaults**
 
 | Variable | Default | Purpose |
@@ -45,25 +47,55 @@ change to a published config contract, and having it costs nothing.
 > override **replaces** the manifest definition rather than merging with it, so
 > setting only `env` there drops `command` and OpenClaw skips the server
 > entirely — `[bundle-mcp] skipped server "singleintent" because its command is
-> missing and its url is missing`. It is silent from your side. If you do need
-> it, restate `transport`, `command` and `args` in full.
+> missing and its url is missing`. It is silent from your side, and `openclaw
+> config set` accepts the entry regardless — the write landing is not the server
+> resolving. If you do need it, restate `transport`, `command`, `args` and `env`
+> in full.
+
+### One instance per engine
+
+`$SINGLEINTENT_CONFIG` is set by the manifest to
+`${CLAUDE_PLUGIN_ROOT}/instance.json`. Each OpenClaw engine installs its own copy
+of this package inside its own state directory, so that path differs per engine
+and several products on one machine do not share a config file. A product writes
+that file when it installs this connector; this package only ever reads the path
+it was handed, and computes no part of it.
+
+`${CLAUDE_PLUGIN_ROOT}` is the one placeholder that expands here.
+`${PLUGIN_ROOT}` and `${PLUGIN_DATA}` are gated on a plugin-data directory that
+only Agent-Plugins-format bundles receive, and that format cannot be installed
+from npm — so they would be written into the environment literally.
+
+The file lives inside the install root, so a reinstall removes it: managed npm
+project directories are content-addressed and a new version gets a new directory.
+That is accepted rather than overlooked — install is when the binding is made, so
+the product rewrites the file as the last step of installing, and its health check
+reports the gap in between. An absent file is not an error here; the config falls
+through to defaults and the unreachable-product message says the binding was
+missing, because a defaulted port and a correct port are the same integer.
+
+Configuration is read **per tool call**, not at startup, so a file written after
+this process started is still seen.
 
 ### Why not `plugins.entries.singleintent.config`?
 
-Because a stdio subprocess cannot read it. Manifest `env` takes no templating,
-the only runtime MCP hook resolves `url`/`headers` for HTTP transports, and the
-child does not inherit the Gateway environment — it receives `HOME`, `LOGNAME`,
-`PATH`, `SHELL`, `USER` and `__CF_USER_TEXT_ENCODING`, plus whatever the server
-definition declares. The cost of that is real: SecretRef support covers only
-`plugins.entries.<id>.config`, so it is unavailable here. `SINGLEINTENT_TOKEN_FILE`
-is the mitigation, and it is weaker.
+Because a stdio subprocess cannot read it. The only runtime MCP hook resolves
+`url`/`headers` for HTTP transports, and the child does not inherit the Gateway
+environment — it receives `HOME`, `LOGNAME`, `PATH`, `SHELL`, `USER` and
+`__CF_USER_TEXT_ENCODING`, plus whatever the server definition declares. Writing
+the key is accepted by `openclaw config set` regardless, because the value is an
+open record and no JSON Schema validator enforces a plugin's declared
+`configSchema`; a write landing says nothing about delivery. The cost is real:
+SecretRef support covers only `plugins.entries.<id>.config`, so it is unavailable
+here. `SINGLEINTENT_TOKEN_FILE` is the mitigation, and it is weaker.
 
 An alternative was tested and rejected: having the plugin entry, which *can* read
 plugin config, resolve it at activation and write it to a file the subprocess
-reads. It fails because the subprocess has no profile identity, so `$HOME` is the
-only path both sides can derive — and two OpenClaw profiles would then write and
-read the *same* file, clobbering each other with the child unable to tell which
-config it holds.
+reads. The reason first recorded for rejecting it — that `$HOME` is the only path
+both sides can derive — was wrong, and the manifest route above is the correction.
+It stays rejected on a different ground: it puts a second writer on a file the
+product already writes, and gives the engine a reason to care which product
+instance it points at.
 
 The distinction that makes the config file above safe where that bridge is not:
 **a human-written config file has one writer and one intent.** The bridge has one

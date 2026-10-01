@@ -20,6 +20,18 @@ export const ENV_PREFIX = "SINGLEINTENT_";
 /** Directory under $HOME holding the optional config file. Public contract. */
 export const CONFIG_DIR_NAME = ".singleintent";
 
+/**
+ * Name of the per-instance config file the manifest points `SINGLEINTENT_CONFIG`
+ * at, resolved against this package's own install root.
+ *
+ * Public contract in the strongest sense of any string here: it is the entire
+ * agreement between this package and the product. The product writes this file at
+ * install; this package reads whatever path it was handed. Neither side computes
+ * the other's layout, which is the point — every alternative required one of them
+ * to encode the other's directory shape, and both shapes have moved.
+ */
+export const INSTANCE_FILE_NAME = "instance.json";
+
 /** Name the MCP handshake advertises; OpenClaw prefixes tools with it. */
 export const SERVER_NAME = BRAND;
 
