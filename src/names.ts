@@ -51,7 +51,7 @@ export const SERVER_NAME = BRAND;
  * writing the version by hand in four places is safe rather than reckless — a bump
  * that misses one fails the suite before it can reach a registry.
  */
-export const SERVER_VERSION = "0.1.1";
+export const SERVER_VERSION = "0.1.2";
 
 /** Fully qualified name of an env var this plugin reads. */
 export const envVar = (suffix: string): string => `${ENV_PREFIX}${suffix}`;
