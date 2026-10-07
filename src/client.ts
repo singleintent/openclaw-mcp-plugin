@@ -36,6 +36,19 @@ export const PRODUCT_SITE_URL = "https://singleintent.com";
 
 export class ProductError extends Error {}
 
+/** A non-2xx response from the product, retaining its machine-readable contract. */
+export class ProductApiError extends ProductError {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly responseBody?: unknown,
+  ) {
+    super(message);
+    this.name = new.target.name;
+  }
+}
+
 /**
  * The product answered, but something it depends on did not.
  *
@@ -52,7 +65,7 @@ export class ProductError extends Error {}
  * Unreachability is a third state again, and stays on `ProductError` proper:
  * nothing answered at all, so there is no upstream to blame.
  */
-export class ProductUpstreamError extends ProductError {}
+export class ProductUpstreamError extends ProductApiError {}
 
 /**
  * The product answered, and refused because the thing asked for is already done.
@@ -68,7 +81,7 @@ export class ProductUpstreamError extends ProductError {}
  * tell them apart will retry the one request where retrying is never right. A
  * subclass, so existing `catch (ProductError)` still catches it.
  */
-export class ProductConflictError extends ProductError {}
+export class ProductConflictError extends ProductApiError {}
 
 /** Statuses that mean the responder failed on behalf of something further up. */
 const UPSTREAM_STATUSES = new Set([502, 503, 504]);
@@ -171,32 +184,55 @@ async function request<T>(
   }
 
   if (!response.ok) {
-    const body = (await response.text().catch(() => "")).slice(0, 400);
-    const detail = `${url} returned ${response.status} ${response.statusText}${body ? `: ${body}` : ""}`;
+    const rawBody = (await response.text().catch(() => "")).slice(0, 400);
+    let responseBody: unknown;
+    try {
+      responseBody = rawBody ? JSON.parse(rawBody) : undefined;
+    } catch {
+      responseBody = undefined;
+    }
+    const bodyRecord =
+      typeof responseBody === "object" && responseBody !== null
+        ? (responseBody as Record<string, unknown>)
+        : undefined;
+    const apiMessage = typeof bodyRecord?.error === "string" ? bodyRecord.error : undefined;
+    const code = typeof bodyRecord?.code === "string" ? bodyRecord.code : undefined;
+    const bodyText = apiMessage
+      ? `: ${apiMessage}${code ? ` (code: ${code})` : ""}`
+      : rawBody
+        ? `: ${rawBody}`
+        : "";
+    const detail = `${url} returned ${response.status} ${response.statusText}${bodyText}`;
+    if (response.status === 503 && code === "auth-unavailable") {
+      throw new ProductApiError(
+        `${detail}. The work-item credential mapping is unavailable or unsafe; an operator must repair it before writes can proceed.`,
+        response.status,
+        code,
+        responseBody,
+      );
+    }
     if (UPSTREAM_STATUSES.has(response.status)) {
       // Deliberately no site link. The product answered this request, so the
-      // caller demonstrably has it; telling them to go and download it would be
-      // actively wrong advice pointing at the wrong component. The message
-      // already sends them to the Gateway, which is the thing that failed.
+      // caller demonstrably has it; pointing at a download page would be wrong.
       throw new ProductUpstreamError(
         `${detail}. The product is running and answered this request; the upstream ` +
           `it proxies — the OpenClaw Gateway — is what failed. Check the Gateway, ` +
           `not the product at host=${config.sources.host} port=${config.sources.port}.`,
+        response.status,
+        code,
+        responseBody,
       );
     }
     if (response.status === 409) {
-      // The product refused because the state already exists. Its own message
-      // says which state, so it is carried through in `detail` rather than
-      // restated; what is added is the one instruction that follows from the
-      // type, since this is the failure a caller is most tempted to retry.
       throw new ProductConflictError(
-        `${detail}. This already exists or has already been done, so retrying ` +
-          `cannot succeed — read the current state instead of calling again.`,
+        `${detail}. For a 409, retrying cannot succeed unchanged; read the current record before deciding what to do next.`,
+        response.status,
+        code,
+        responseBody,
       );
     }
-    // Also no link: a non-upstream status means the product is running and
-    // refused this request. Whatever is wrong, it is not a missing install.
-    throw new ProductError(detail);
+    // Preserve status and the product's code for typed callers.
+    throw new ProductApiError(detail, response.status, code, responseBody);
   }
 
   try {

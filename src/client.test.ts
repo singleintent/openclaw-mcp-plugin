@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   PRODUCT_SITE_URL,
+  ProductApiError,
   ProductConflictError,
   ProductError,
   ProductUpstreamError,
@@ -216,6 +217,28 @@ describe("a write that conflicts", () => {
     const config = await serving((respond) => respond(409, "{}"));
     const error = await sendJson(config, "POST", "/api/connections", {}).catch((e: Error) => e);
     expect(error).not.toBeInstanceOf(ProductUpstreamError);
+  }, 20_000);
+});
+
+describe("typed product API errors", () => {
+  it("maps an unavailable work-item credential map to a typed non-Gateway error", async () => {
+    const payload = { error: "work-item write authentication is not configured safely", code: "auth-unavailable" };
+    const config = await serving((respond) => respond(503, JSON.stringify(payload)));
+    const error = await getJson(config, "/api/workitems?project=bad-id").catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(ProductApiError);
+    expect(error).not.toBeInstanceOf(ProductUpstreamError);
+    expect(error).toMatchObject({ status: 503, code: "auth-unavailable" });
+    expect((error as Error).message).toContain("operator must repair it");
+  }, 20_000);
+
+  it("preserves HTTP status, server code, and safe message fields", async () => {
+    const payload = { error: "principal is not authorized for this project", code: "project-forbidden" };
+    const config = await serving((respond) => respond(403, JSON.stringify(payload)));
+    const error = await getJson(config, "/api/workitems?project=bad-id").catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(ProductApiError);
+    expect(error).toMatchObject({ status: 403, code: "project-forbidden", responseBody: payload });
+    expect((error as Error).message).toContain(payload.error);
+    expect((error as ProductApiError).message).toContain("project-forbidden");
   }, 20_000);
 });
 

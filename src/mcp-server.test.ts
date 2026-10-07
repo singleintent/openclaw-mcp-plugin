@@ -18,6 +18,47 @@ const readJson = (relative: string): Record<string, unknown> =>
 const pkg = readJson("../package.json");
 const manifest = readJson("../openclaw.plugin.json");
 
+describe("work-item MCP tool contract", () => {
+  const tool = (name: string): (typeof TOOLS)[number] => {
+    const found = TOOLS.find((candidate) => candidate.name === name);
+    if (!found) throw new Error("missing tool: " + name);
+    return found;
+  };
+
+  const properties = (name: string): Record<string, { enum?: string[]; type?: string }> =>
+    (tool(name).inputSchema as { properties: Record<string, { enum?: string[]; type?: string }> }).properties;
+
+  it("exposes list, get, create, and exactly one state-changing tool", () => {
+    for (const name of ["list_workitems", "get_workitem", "create_workitem", "workitem_set_state"]) {
+      expect(TOOLS.map((entry) => entry.name)).toContain(name);
+    }
+    const stateTools = TOOLS.filter((entry) => /change[s]? a work record.s state|state-changing/i.test(entry.description ?? ""));
+    expect(stateTools.map((entry) => entry.name)).toEqual(["workitem_set_state"]);
+    expect(tool("workitem_set_state").description).toMatch(/only MCP tool that changes/);
+  });
+
+  it("requires explicit project scope on every work-item operation", () => {
+    expect((tool("list_workitems").inputSchema as { required: string[] }).required).toContain("projectId");
+    expect((tool("get_workitem").inputSchema as { required: string[] }).required).toEqual(["projectId", "itemId"]);
+    expect((tool("create_workitem").inputSchema as { required: string[] }).required).toContain("projectId");
+    expect((tool("workitem_set_state").inputSchema as { required: string[] }).required).toEqual(["projectId", "itemId", "state"]);
+  });
+
+  it("accepts only server MVP state targets and never exposes actor or timestamp inputs", () => {
+    const schema = tool("workitem_set_state").inputSchema as { additionalProperties: boolean; properties: Record<string, { enum?: string[] }> };
+    expect(schema.additionalProperties).toBe(false);
+    expect(Object.keys(schema.properties)).toEqual(["projectId", "itemId", "state", "reason", "outcome", "evidence", "eventId"]);
+    expect(schema.properties.state?.enum).toEqual(["started", "blocked", "completed", "failed", "canceled"]);
+    for (const key of ["actor", "agentId", "timestamp", "at"]) expect(schema.properties).not.toHaveProperty(key);
+  });
+
+  it("documents the stable event id needed to retry writes safely", () => {
+    expect(tool("create_workitem").description).toMatch(/reuse the same UUIDv7 eventId/);
+    expect(tool("workitem_set_state").description).toMatch(/reuse the same UUIDv7 eventId/);
+    expect(properties("workitem_set_state")).toHaveProperty("eventId");
+  });
+});
+
 describe("manifest wiring", () => {
   it("points the manifest at the built server, by a plugin-root-relative path", () => {
     const mcpServers = manifest.mcpServers as Record<
@@ -106,9 +147,9 @@ describe("the write verbs", () => {
     return found;
   };
 
-  it("are all advertised, alongside the seven reads", () => {
+  it("advertises all existing writes alongside the work-item tools", () => {
     for (const name of WRITE_VERBS) expect(TOOLS.map((t) => t.name)).toContain(name);
-    expect(TOOLS).toHaveLength(14);
+    expect(TOOLS).toHaveLength(18);
   });
 
   it("each declare their required arguments, so a model cannot omit one", () => {
@@ -323,12 +364,12 @@ describe("config is resolved per tool call", () => {
     const { call, close } = await connected(() => loadConfig({ [`${ENV_PREFIX}CONFIG`]: path }));
     try {
       // The file does not exist yet, which is the state the race produces.
-      writeFileSync(path, JSON.stringify({ host: "written.late.invalid" }));
+      writeFileSync(path, JSON.stringify({ host: "127.0.0.1", port: 1 }));
       const result = await call();
       expect(result.isError).toBe(true);
       // The host could only come from the file, and the file was written after
       // construction — so the read happened at call time.
-      expect(textOf(result)).toContain("written.late.invalid");
+      expect(textOf(result)).toContain("http://127.0.0.1:1/api/projects");
     } finally {
       await close();
     }

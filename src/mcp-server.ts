@@ -36,6 +36,13 @@ import { listTemplates } from "./verbs/list-templates.js";
 import { DEFAULT_LIMIT, MAX_LIMIT } from "./verbs/paging.js";
 import { sendMessage } from "./verbs/send-message.js";
 import { updateTemplate } from "./verbs/update-template.js";
+import {
+  createWorkitem,
+  getWorkitem,
+  listWorkitems,
+  workitemSetState,
+  WORKITEM_STATES,
+} from "./verbs/workitems.js";
 import { NOT_REVERSIBLE } from "./verbs/write-args.js";
 
 export { SERVER_NAME, SERVER_VERSION };
@@ -177,6 +184,80 @@ export const TOOLS: Tool[] = [
       type: "object",
       additionalProperties: false,
       properties: { ...pagingSchema("sessions") },
+    },
+  },
+
+  {
+    name: "list_workitems",
+    description:
+      "List the work records in exactly one project. Requires the project UUID; " +
+      "the server returns intent and projected records. A readOk=false result " +
+      "means the project store could not be read, not that it is empty.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["projectId"],
+      properties: { projectId: { type: "string", description: "UUID of the project to list." } },
+    },
+  },
+  {
+    name: "get_workitem",
+    description:
+      "Read one work record and its append-only event history from the required " +
+      "project. Returns found=false when the item is absent; a project is required " +
+      "because the server does not scan across projects.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["projectId", "itemId"],
+      properties: {
+        projectId: { type: "string", description: "UUID of the item's project." },
+        itemId: { type: "string", description: "UUID of the item within that project." },
+      },
+    },
+  },
+  {
+    name: "create_workitem",
+    description:
+      "Create a work record in the required project. The server assigns its item " +
+      "ID, open state, actor, and timestamp. eventId is optional; when retrying an " +
+      "uncertain request, supply and reuse the same UUIDv7 eventId for safe " +
+      "idempotency. If omitted, a UUIDv7 is generated for this call; an omitted " +
+      "key cannot be reused after a lost response.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["projectId", "title", "intent"],
+      properties: {
+        projectId: { type: "string", description: "UUID of the project that owns this work record." },
+        title: { type: "string", minLength: 1, maxLength: 200 },
+        intent: { type: "string", minLength: 1, maxLength: 10000 },
+        eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
+      },
+    },
+  },
+  {
+    name: "workitem_set_state",
+    description:
+      "The only MCP tool that changes a work record's state. Use it for one " +
+      "server-validated MVP transition; open is initial-only. The server supplies " +
+      "the authenticated actor and timestamp—do not provide either. Reason is " +
+      "required for blocked, failed, or canceled; outcome is required for completed. " +
+      "For safe retries, supply and reuse the same UUIDv7 eventId; if omitted, a " +
+      "UUIDv7 is generated for this call and cannot be reused after a lost response.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["projectId", "itemId", "state"],
+      properties: {
+        projectId: { type: "string", description: "UUID of the project's work-item store." },
+        itemId: { type: "string", description: "UUID of the item in that project." },
+        state: { type: "string", enum: [...WORKITEM_STATES] },
+        reason: { type: "string", maxLength: 2000 },
+        outcome: { type: "string", maxLength: 5000 },
+        evidence: { type: "string", maxLength: 5000 },
+        eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
+      },
     },
   },
 
@@ -396,10 +477,9 @@ export function createServer(resolveConfig: () => Config): Server {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
   /**
-   * Arguments cross the wire in the snake_case of the tool schemas; the verb
-   * modules speak camelCase. That mapping is the only thing each entry does, so
-   * a table keeps it visible as a table instead of hiding it in a chain of ifs
-   * that grows a branch per verb.
+   * Existing tools cross the wire in snake_case while their verb modules speak
+   * camelCase. The work-item contract uses camelCase on both sides. Keeping the
+   * mapping in this table makes every tool-to-handler delegation visible.
    *
    * Built per call because it closes over the config resolved for that call.
    */
@@ -409,6 +489,39 @@ export function createServer(resolveConfig: () => Config): Server {
     string,
     (args: Record<string, unknown>, options: RequestOptions) => Promise<unknown>
   > => ({
+    list_workitems: (args, options) =>
+      listWorkitems(config, { projectId: args.projectId }, options),
+    get_workitem: (args, options) =>
+      getWorkitem(
+        config,
+        { projectId: args.projectId, itemId: args.itemId },
+        options,
+      ),
+    create_workitem: (args, options) =>
+      createWorkitem(
+        config,
+        {
+          projectId: args.projectId,
+          title: args.title,
+          intent: args.intent,
+          eventId: args.eventId,
+        },
+        options,
+      ),
+    workitem_set_state: (args, options) =>
+      workitemSetState(
+        config,
+        {
+          projectId: args.projectId,
+          itemId: args.itemId,
+          state: args.state,
+          reason: args.reason,
+          outcome: args.outcome,
+          evidence: args.evidence,
+          eventId: args.eventId,
+        },
+        options,
+      ),
     list_projects: (args, options) =>
       listProjects(
         config,
