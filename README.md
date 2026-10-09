@@ -741,7 +741,7 @@ printf '%s\n%s\n%s\n' \
 Expected, from the plugin's install path:
 
 ```json
-{"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.2"}},"jsonrpc":"2.0","id":1}
+{"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.3"}},"jsonrpc":"2.0","id":1}
 {"result":{"tools":[{"name":"list_projects", ...},{"name":"get_project", ...},{"name":"list_agents", ...},{"name":"list_templates", ...},{"name":"list_connections", ...},{"name":"get_backlog", ...},{"name":"get_activity", ...},{"name":"create_project", ...},{"name":"create_agent", ...},{"name":"create_template", ...},{"name":"update_template", ...},{"name":"apply_role", ...},{"name":"create_connection", ...},{"name":"send_message", ...}]},"jsonrpc":"2.0","id":2}
 ```
 
