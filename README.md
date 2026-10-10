@@ -669,7 +669,10 @@ actor and time; no verb takes either.
 | `workitem_estimate` | `POST /api/workitems/:itemId/estimate?project=<id>` | yes |
 
 - `create_workitem` takes `title`, `intent` and an optional `estimate` (`XS`, `S`,
-  `M`, `L` or `XL`), recorded as the item's original estimate.
+  `M`, `L` or `XL`), recorded as the item's original estimate. It also takes the
+  optional tracking fields `kind` (`task` or `focus`), `assignee` (agent id of a
+  project member), `focus` (UUIDv7 of a focus item) and `test` (boolean). Each is
+  sent only when given; the server checks assignee membership and the focus item.
 - `workitem_set_state` is the only verb that changes state. Targets: `started`,
   `blocked`, `completed`, `failed`, `canceled`, plus `dispatched` and
   `acknowledged`. `reason` is required for blocked, failed and canceled, and

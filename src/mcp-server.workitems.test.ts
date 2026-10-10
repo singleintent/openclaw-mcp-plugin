@@ -266,6 +266,34 @@ describe("work-item write credentials", () => {
     expect(received[0]?.body).toEqual({ eventId: EVENT, title: "Task", intent: "Do", estimate: "XL" });
   });
 
+  it("forwards create_workitem's tracking fields to the product (SCRUM-147)", async () => {
+    await connect();
+    responseBody = WRITE_OK;
+    provision(AGENT, AGENT_TOKEN);
+    const focus = "01890000-0000-7000-8000-0000000000f0";
+    await client!.callTool({
+      name: "create_workitem",
+      arguments: { ...CREATE_ARGS, kind: "task", assignee: "owner-agent", focus, test: true, ...acting() },
+    });
+    expect(received[0]?.body).toEqual({
+      eventId: EVENT,
+      title: "Task",
+      intent: "Do",
+      kind: "task",
+      assignee: "owner-agent",
+      focus,
+      test: true,
+    });
+  });
+
+  it("keeps omitted create_workitem tracking fields out of the body (SCRUM-147)", async () => {
+    await connect();
+    responseBody = WRITE_OK;
+    provision(AGENT, AGENT_TOKEN);
+    await client!.callTool({ name: "create_workitem", arguments: { ...CREATE_ARGS, ...acting() } });
+    expect(Object.keys(received[0]?.body as object).sort()).toEqual(["eventId", "intent", "title"]);
+  });
+
   it("sends workitem_estimate as the acting agent, with exactly eventId and size", async () => {
     await connect("instance-token");
     responseBody = WRITE_OK;

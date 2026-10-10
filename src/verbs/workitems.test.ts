@@ -207,6 +207,57 @@ describe("work-item writes", () => {
     expect(JSON.parse(requests[1]!.body)).not.toHaveProperty("estimate");
   });
 
+  it("sends kind, assignee, focus and test on create only when given (SCRUM-147)", async () => {
+    const cfg = await config();
+    const FOCUS = "01890000-0000-7000-8000-0000000000f0";
+    await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      kind: "task",
+      assignee: "agent-a",
+      focus: FOCUS,
+      test: false,
+      eventId: EVENT,
+    });
+    expect(JSON.parse(requests[0]!.body)).toEqual({
+      eventId: EVENT,
+      title: "Task",
+      intent: "Do it",
+      kind: "task",
+      assignee: "agent-a",
+      focus: FOCUS,
+      test: false,
+    });
+    await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      kind: undefined,
+      assignee: undefined,
+      focus: null,
+      test: undefined,
+      eventId: EVENT,
+    });
+    expect(JSON.parse(requests[1]!.body)).toEqual({ eventId: EVENT, title: "Task", intent: "Do it" });
+  });
+
+  it("leaves assignee validation to the server and keeps its 400 invalid-assignee", async () => {
+    const cfg = await config();
+    responseStatus = 400;
+    responseBody = { error: "assignee must be an agent in this project", code: "invalid-assignee" };
+    const error = await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      assignee: "stranger",
+      eventId: EVENT,
+    }).catch((value: unknown) => value);
+    expect(JSON.parse(requests[0]!.body).assignee).toBe("stranger");
+    expect(error).toBeInstanceOf(ProductApiError);
+    expect(error).toMatchObject({ status: 400, code: "invalid-assignee" });
+  });
+
   it("leaves estimate validation to the server and keeps its 400 invalid-estimate", async () => {
     const cfg = await config();
     responseStatus = 400;

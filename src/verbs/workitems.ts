@@ -211,6 +211,10 @@ export async function createWorkitem(
     title: unknown;
     intent: unknown;
     estimate?: unknown;
+    kind?: unknown;
+    assignee?: unknown;
+    focus?: unknown;
+    test?: unknown;
     eventId?: unknown;
   },
   options: RequestOptions = {},
@@ -233,10 +237,14 @@ export async function createWorkitem(
       "intent must be non-empty text no longer than 10000 characters",
     );
   const eventId = requireEventId(args.eventId);
-  // The size is the server's to check: an unknown one comes back as its own
-  // 400 invalid-estimate rather than a plugin message saying the same thing.
+  // The size and tracking fields are the server's to check: a bad one comes
+  // back as its own 400 (invalid-estimate, invalid-assignee, ...) rather than a
+  // plugin message saying the same thing. Absent ones stay out of the body, so
+  // an omitted test never becomes false.
   const body: Record<string, unknown> = { eventId, title: args.title, intent: args.intent };
-  if (args.estimate !== undefined) body.estimate = args.estimate;
+  for (const key of ["estimate", "kind", "assignee", "focus", "test"] as const) {
+    if (args[key] !== undefined && args[key] !== null) body[key] = args[key];
+  }
   const response = await sendJson<unknown>(
     config,
     "POST",

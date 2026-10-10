@@ -57,6 +57,16 @@ describe("work-item MCP tool contract", () => {
     expect((tool("create_workitem").inputSchema as { required: string[] }).required).not.toContain("estimate");
   });
 
+  it("offers create_workitem optional kind, assignee, focus and test tracking fields (SCRUM-147)", () => {
+    const props = properties("create_workitem");
+    expect(props.kind).toMatchObject({ type: "string", enum: ["task", "focus"] });
+    expect(props.assignee?.type).toBe("string");
+    expect(props.focus?.type).toBe("string");
+    expect(props.test?.type).toBe("boolean");
+    const required = (tool("create_workitem").inputSchema as { required: string[] }).required;
+    for (const key of ["kind", "assignee", "focus", "test"]) expect(required).not.toContain(key);
+  });
+
   it("offers workitem_estimate with a required t-shirt size and no state input", () => {
     const schema = tool("workitem_estimate").inputSchema as { additionalProperties: boolean; required: string[] };
     expect(schema.additionalProperties).toBe(false);

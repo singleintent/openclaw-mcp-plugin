@@ -231,7 +231,8 @@ export const TOOLS: Tool[] = [
       "ID, open state, actor, and timestamp. eventId is optional; when retrying an " +
       "uncertain request, supply and reuse the same UUIDv7 eventId for safe " +
       "idempotency. If omitted, a UUIDv7 is generated for this call; an omitted " +
-      "key cannot be reused after a lost response.",
+      "key cannot be reused after a lost response. Optional kind, assignee, focus " +
+      "and test set the item's tracking fields; the server checks assignee membership and the focus item.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -245,6 +246,17 @@ export const TOOLS: Tool[] = [
           enum: [...ESTIMATE_SIZES],
           description: "Optional t-shirt size recorded as the item's original estimate.",
         },
+        kind: {
+          type: "string",
+          enum: ["task", "focus"],
+          description: "Optional item kind; the server default is task.",
+        },
+        assignee: { type: "string", description: "Optional agent id of the project member who owns the item." },
+        focus: {
+          type: "string",
+          description: "Optional UUIDv7 of the focus item this item serves; not allowed when kind is focus.",
+        },
+        test: { type: "boolean", description: "Optional marker for test items; omit for real work." },
         eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
       },
     },
@@ -541,6 +553,10 @@ export function createServer(resolveConfig: () => Config): Server {
           title: args.title,
           intent: args.intent,
           estimate: args.estimate,
+          kind: args.kind,
+          assignee: args.assignee,
+          focus: args.focus,
+          test: args.test,
           eventId: args.eventId,
         },
         options,
