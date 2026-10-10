@@ -105,7 +105,8 @@ instance it points at.
 
 The distin### Work-item write credentials
 
-`create_workitem` and `workitem_set_state` authenticate as **the calling agent**,
+`create_workitem`, `workitem_set_state` and `workitem_estimate` authenticate as
+**the calling agent**,
 not as the instance. The product records the agent its bearer token maps to as the
 event's actor, so each agent needs its own token, and the plugin sends only that
 agent's:
@@ -124,7 +125,7 @@ re-read on every write, so rotating or revoking a token is replacing or deleting
 the file; no restart is needed.
 
 How the agent is known: the plugin entry registers a `before_tool_call` hook that
-stamps two arguments onto those two tools, always overwriting anything the model
+stamps two arguments onto those three tools, always overwriting anything the model
 supplied: `actingAgentId` (the Gateway's `ctx.agentId`) and `actingEngineStateDir`
 (`dirname(resolveConfigPath())`, from the public `openclaw/plugin-sdk/state-paths`
 subpath). If OpenClaw names no agent for the call, the hook blocks it. The MCP
@@ -198,7 +199,8 @@ tolerate being called with none, or it will act on empty config intermittently.
 
 ## Verbs
 
-Fourteen: seven that read and seven that write. Every one is a single call to the
+Fourteen: seven that read and seven that write, plus the five
+[work-item verbs](#work-item-verbs). Every one is a single call to the
 product's API. This connector validates arguments, makes that call, and shapes the
 response — it holds no state, keeps no cache, and performs no step the product does
 not expose as an endpoint. Where something is missing from the surface, the reason
@@ -634,6 +636,41 @@ is wanted, it starts as a product endpoint.
 
 There is no delete verb of any kind, and no way to edit an agent after creating it,
 for the same reason: no route.
+
+## Work-item verbs
+
+Five, all scoped to exactly one project by a required `projectId` UUID, and all
+camelCase on the wire. Reads use the instance token; the three writes go out as
+the calling agent (see [Work-item write credentials](#work-item-write-credentials)).
+Every write takes an optional UUIDv7 `eventId`: reuse it to retry safely, since
+the server deduplicates on it (200 with `deduplicated: true`). The server assigns
+actor and time; no verb takes either.
+
+| Verb | Route | Writes |
+| --- | --- | --- |
+| `list_workitems` | `GET /api/workitems?project=<id>` | no |
+| `get_workitem` | `GET /api/workitems/:itemId?project=<id>` | no |
+| `create_workitem` | `POST /api/workitems?project=<id>` | yes |
+| `workitem_set_state` | `POST /api/workitems/:itemId/state?project=<id>` | yes |
+| `workitem_estimate` | `POST /api/workitems/:itemId/estimate?project=<id>` | yes |
+
+- `create_workitem` takes `title`, `intent` and an optional `estimate` (`XS`, `S`,
+  `M`, `L` or `XL`), recorded as the item's original estimate.
+- `workitem_set_state` is the only verb that changes state. Targets: `started`,
+  `blocked`, `completed`, `failed`, `canceled`, plus `dispatched` and
+  `acknowledged`. `reason` is required for blocked, failed and canceled, and
+  `outcome` for completed. `dispatched` and `acknowledged` each append a ledger
+  event and leave the item `open`; they take only an optional `reason`. The
+  server refuses outcome or evidence on them (400 `invalid-body`), `acknowledged`
+  without an earlier `dispatched` (409), and either on a started or terminal item
+  (409). There is no separate acknowledge route.
+- `workitem_estimate` re-estimates with a required `size` (`XS` to `XL`). The body
+  is exactly `{eventId, size}`. Each call adds an estimate and keeps the earlier
+  ones; a completed, failed or canceled item returns 409.
+
+Sizes and transitions are the server's to check. Its status, `code` and message
+come back unchanged in the tool error (for example 400 `invalid-estimate`, 409
+`invalid-transition`), never remapped to a plugin message.
 
 ## Errors, and the distinction worth keeping
 
