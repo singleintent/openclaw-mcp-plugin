@@ -44,6 +44,12 @@ import {
   WORKITEM_STATES,
 } from "./verbs/workitems.js";
 import { NOT_REVERSIBLE } from "./verbs/write-args.js";
+import {
+  readWorkitemToken,
+  withoutActingArgs,
+  WORKITEM_WRITE_TOOLS,
+  WorkitemCredentialError,
+} from "./workitem-token.js";
 
 export { SERVER_NAME, SERVER_VERSION };
 
@@ -613,9 +619,19 @@ export function createServer(resolveConfig: () => Config): Server {
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    let args = (request.params.arguments ?? {}) as Record<string, unknown>;
     try {
-      const handler = buildHandlers(resolveConfig())[request.params.name];
+      let config = resolveConfig();
+      // A work-item write goes out as the calling agent and only as that agent:
+      // the instance token is replaced, not merely preferred against, so a
+      // missing per-agent token can never degrade into a write under another
+      // identity. See src/workitem-token.ts. Reads keep the instance token.
+      if (WORKITEM_WRITE_TOOLS.has(request.params.name)) {
+        const { token } = readWorkitemToken(args);
+        config = { ...config, token, sources: { ...config.sources, token: "workitem-token" } };
+        args = withoutActingArgs(args);
+      }
+      const handler = buildHandlers(config)[request.params.name];
       if (handler === undefined) {
         throw new Error(`unknown tool: ${request.params.name}`);
       }
@@ -631,6 +647,20 @@ export function createServer(resolveConfig: () => Config): Server {
         content: [
           { type: "text", text: error instanceof Error ? error.message : String(error) },
         ],
+        // A local refusal carries a plugin-owned code and no HTTP status: no
+        // request was made. The product's own 401/403 pass through unchanged.
+        ...(error instanceof WorkitemCredentialError
+          ? {
+              structuredContent: {
+                error: {
+                  code: error.code,
+                  agentId: error.agentId ?? null,
+                  path: error.path ?? null,
+                  message: error.message,
+                },
+              },
+            }
+          : {}),
       };
     }
   });

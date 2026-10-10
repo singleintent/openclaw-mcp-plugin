@@ -8,6 +8,11 @@ stdio process.
 `get_backlog`, `get_activity`. All reads; no write verb exists yet. Everything
 below is verified against OpenClaw 2026.9.5 and a running product.
 
+**Requires OpenClaw 2026.9.8 or later** (`minHostVersion`, `compat.pluginApi`
+and the peer range are all `>=2026.9.8`): the work-item write hook imports
+`resolveConfigPath` from `openclaw/plugin-sdk/state-paths`, which 2026.9.5 does
+not export.
+
 ## Configuration
 
 The server resolves its own configuration. Precedence, highest first:
@@ -23,8 +28,9 @@ The server resolves its own configuration. Precedence, highest first:
 | `SINGLEINTENT_HOST` | `127.0.0.1` | Product host |
 | `SINGLEINTENT_PORT` | `5173` | Product port |
 | `SINGLEINTENT_CONFIG` | — | Config file path override |
-| `SINGLEINTENT_TOKEN` | unset | Auth token; no header is sent while unset |
-| `SINGLEINTENT_TOKEN_FILE` | unset | Path to a token, keeping the secret out of config |
+| `SINGLEINTENT_TOKEN` | unset | Auth token; no header is sent while unset. Never used for work-item writes |
+| `SINGLEINTENT_TOKEN_FILE` | unset | Path to a token, keeping the secret out of config. Never used for work-item writes |
+| `SINGLEINTENT_WORKITEM_PRINCIPALS_FILE` | unset | Test override that moves the per-agent token directory; see below |
 
 The config file takes `host`, `port` and `token`. An absent file is normal.
 Malformed JSON, a non-object file, an out-of-range port, or an unreadable or
@@ -97,10 +103,79 @@ It stays rejected on a different ground: it puts a second writer on a file the
 product already writes, and gives the engine a reason to care which product
 instance it points at.
 
-The distinction that makes the config file above safe where that bridge is not:
-**a human-written config file has one writer and one intent.** The bridge has one
-writer per profile, racing. Identical file location, completely different safety
-properties.
+The distin### Work-item write credentials
+
+`create_workitem` and `workitem_set_state` authenticate as **the calling agent**,
+not as the instance. The product records the agent its bearer token maps to as the
+event's actor, so each agent needs its own token, and the plugin sends only that
+agent's:
+
+```
+<engine state dir>/singleintent/workitem-tokens/<agentId>
+```
+
+`<engine state dir>` is the directory holding the OpenClaw profile's
+`openclaw.json`, which is also where the product keeps its hashed
+`workitem-principals.json`. The file holds only the token (43-character
+base64url) and should be mode `0600` in a `0700` directory. It is outside this
+package's install root on purpose: `openclaw plugins update` and a reinstall from
+the product replace the install root, and the tokens survive both. The file is
+re-read on every write, so rotating or revoking a token is replacing or deleting
+the file; no restart is needed.
+
+How the agent is known: the plugin entry registers a `before_tool_call` hook that
+stamps two arguments onto those two tools, always overwriting anything the model
+supplied: `actingAgentId` (the Gateway's `ctx.agentId`) and `actingEngineStateDir`
+(`dirname(resolveConfigPath())`, from the public `openclaw/plugin-sdk/state-paths`
+subpath). If OpenClaw names no agent for the call, the hook blocks it. The MCP
+server removes both arguments before building the request; they never reach the
+product and are not in any tool's input schema.
+
+The token directory is resolved, first match wins:
+
+1. `$SINGLEINTENT_WORKITEM_PRINCIPALS_FILE` set:
+   `<dirname(path.resolve(file))>/singleintent/workitem-tokens`, the way the
+   product resolves it.
+2. `actingEngineStateDir` from the hook (absolute only).
+3. `dirname($OPENCLAW_CONFIG_PATH)` when that is set and absolute.
+4. Otherwise the write is refused locally.
+
+No other source is consulted: not the OpenClaw state-dir environment variable,
+the install path, or the working directory.
+
+**Writes fail closed.** Wherever the hook does not stamp the agent — a runtime
+that does not fire `before_tool_call` for bundle MCP tools, or a call with no
+agent identity — or the directory cannot be resolved, or the agent's file is
+missing, empty or unreadable, the write is refused locally and no HTTP request is
+made. The tool error's `structuredContent.error` carries a plugin-owned `code`,
+`agentId`, `path` and `message`, and no HTTP `status`, since nothing reached the
+product:
+
+| `code` | Cause |
+| --- | --- |
+| `no-acting-agent` | no `actingAgentId` was supplied (the hook did not run) |
+| `unsafe-agent-id` | the agent id is not a single path segment; names the id |
+| `no-engine-state-dir` | none of the three directory sources resolved; names the agent |
+| `no-agent-token` | the agent's token file is missing, empty or unreadable; names the agent and the expected path |
+
+A 401 or 403 from the product itself is passed through unchanged. There is no
+fallback to `SINGLEINTENT_TOKEN`, `SINGLEINTENT_TOKEN_FILE`, the config file's
+`token`, or another agent's file. Reads, and every other verb, keep the instance
+token described above.
+
+**Limitation.** The MCP server cannot tell a hook-stamped `actingAgentId` or
+`actingEngineStateDir` from one the model wrote itself. Where the hook runs, it
+overwrites both, so the model cannot choose them. Where the hook does not run, a
+model that supplies `actingAgentId` (and optionally `actingEngineStateDir`) is
+indistinguishable from the hook, and its write is sent with the token of
+whichever agent it named, provided that agent's token file exists in the
+resolved directory. The hook is verified on the claude-cli
+runtime; elsewhere, treat work-item writes as unattributed until it is.
+
+GLEINTENT_TOKEN_FILE`, the config file's
+`token`, or another agent's file. The hook is verified on the claude-cli runtime;
+elsewhere, treat writes as unavailable until it is. Reads, and every other verb,
+keep the instance token described above.
 
 ### Known-unverified behaviour
 
