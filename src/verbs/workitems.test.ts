@@ -339,6 +339,34 @@ describe("work-item writes", () => {
     });
   });
 
+  it("sends waitingOn on a state change only when given (SCRUM-154)", async () => {
+    const cfg = await config();
+    const base = { projectId: PROJECT, itemId: ITEM, state: "blocked", reason: "Waiting", eventId: EVENT };
+    await workitemSetState(cfg, { ...base, waitingOn: "backend-dev" });
+    await workitemSetState(cfg, { ...base, waitingOn: undefined });
+    await workitemSetState(cfg, { ...base, waitingOn: null });
+    expect(JSON.parse(requests[0]!.body)).toEqual({ eventId: EVENT, state: "blocked", reason: "Waiting", waitingOn: "backend-dev" });
+    expect(JSON.parse(requests[1]!.body)).toEqual({ eventId: EVENT, state: "blocked", reason: "Waiting" });
+    expect(JSON.parse(requests[2]!.body)).toEqual({ eventId: EVENT, state: "blocked", reason: "Waiting" });
+  });
+
+  it("leaves waitingOn rules to the server and keeps its 400 waiting-on-not-allowed (SCRUM-154)", async () => {
+    const cfg = await config();
+    responseStatus = 400;
+    responseBody = { error: "waitingOn is only allowed with state blocked", code: "waiting-on-not-allowed" };
+    const error = await workitemSetState(cfg, {
+      projectId: PROJECT,
+      itemId: ITEM,
+      state: "started",
+      waitingOn: "backend-dev",
+      eventId: EVENT,
+    }).catch((value: unknown) => value);
+    expect(JSON.parse(requests[0]!.body).waitingOn).toBe("backend-dev");
+    expect(error).toBeInstanceOf(ProductApiError);
+    expect(error).toMatchObject({ status: 400, code: "waiting-on-not-allowed" });
+    expect((error as Error).message).toContain("waitingOn is only allowed with state blocked");
+  });
+
   it("reuses the same state event id and exact request body on retry", async () => {
     const cfg = await config();
     const input = {

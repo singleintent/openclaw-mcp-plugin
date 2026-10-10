@@ -263,6 +263,7 @@ export async function workitemSetState(
     reason?: unknown;
     outcome?: unknown;
     evidence?: unknown;
+    waitingOn?: unknown;
     eventId?: unknown;
   },
   options: RequestOptions = {},
@@ -303,6 +304,10 @@ export async function workitemSetState(
   const body: Record<string, unknown> = { eventId, state: args.state };
   for (const key of ["reason", "outcome", "evidence"] as const)
     if (args[key] !== undefined) body[key] = args[key];
+  // waitingOn is the server's to check (SCRUM-154): blocked-only and its
+  // bounds come back as its own 400 waiting-on-not-allowed / invalid-waiting-on.
+  if (args.waitingOn !== undefined && args.waitingOn !== null)
+    body.waitingOn = args.waitingOn;
   const response = await sendJson<unknown>(
     config,
     "POST",

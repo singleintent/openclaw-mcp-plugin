@@ -271,6 +271,7 @@ export const TOOLS: Tool[] = [
       "dispatched and acknowledged record a hand-off and pickup on an open item, which " +
       "stays open; they take an optional reason and no outcome or evidence, and " +
       "acknowledged needs an earlier dispatched. " +
+      "Optional waitingOn names who or what a blocked item waits on; it is only valid with blocked. " +
       "For safe retries, supply and reuse the same UUIDv7 eventId; if omitted, a " +
       "UUIDv7 is generated for this call and cannot be reused after a lost response.",
     inputSchema: {
@@ -284,6 +285,12 @@ export const TOOLS: Tool[] = [
         reason: { type: "string", maxLength: 2000 },
         outcome: { type: "string", maxLength: 5000 },
         evidence: { type: "string", maxLength: 5000 },
+        waitingOn: {
+          type: "string",
+          minLength: 1,
+          maxLength: 200,
+          description: "Optional who or what a blocked item waits on; only valid with state blocked.",
+        },
         eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
       },
     },
@@ -571,6 +578,7 @@ export function createServer(resolveConfig: () => Config): Server {
           reason: args.reason,
           outcome: args.outcome,
           evidence: args.evidence,
+          waitingOn: args.waitingOn,
           eventId: args.eventId,
         },
         options,

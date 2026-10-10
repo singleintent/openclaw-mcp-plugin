@@ -47,9 +47,15 @@ describe("work-item MCP tool contract", () => {
   it("accepts only server MVP state targets and never exposes actor or timestamp inputs", () => {
     const schema = tool("workitem_set_state").inputSchema as { additionalProperties: boolean; properties: Record<string, { enum?: string[] }> };
     expect(schema.additionalProperties).toBe(false);
-    expect(Object.keys(schema.properties)).toEqual(["projectId", "itemId", "state", "reason", "outcome", "evidence", "eventId"]);
+    expect(Object.keys(schema.properties)).toEqual(["projectId", "itemId", "state", "reason", "outcome", "evidence", "waitingOn", "eventId"]);
     expect(schema.properties.state?.enum).toEqual(["dispatched", "acknowledged", "started", "blocked", "completed", "failed", "canceled"]);
     for (const key of ["actor", "agentId", "timestamp", "at"]) expect(schema.properties).not.toHaveProperty(key);
+  });
+
+  it("offers workitem_set_state an optional waitingOn string of 1-200 chars (SCRUM-154)", () => {
+    expect(properties("workitem_set_state").waitingOn).toMatchObject({ type: "string", minLength: 1, maxLength: 200 });
+    expect((tool("workitem_set_state").inputSchema as { required: string[] }).required).not.toContain("waitingOn");
+    expect(tool("workitem_set_state").description).toMatch(/waitingOn .*only valid with blocked/);
   });
 
   it("offers create_workitem an optional t-shirt estimate", () => {

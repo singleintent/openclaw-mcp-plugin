@@ -680,7 +680,10 @@ actor and time; no verb takes either.
   event and leave the item `open`; they take only an optional `reason`. The
   server refuses outcome or evidence on them (400 `invalid-body`), `acknowledged`
   without an earlier `dispatched` (409), and either on a started or terminal item
-  (409). There is no separate acknowledge route.
+  (409). There is no separate acknowledge route. An optional `waitingOn` (1–200
+  characters) names who or what a blocked item waits on; it is sent only when
+  given, and the server refuses it on any other state (400 `waiting-on-not-allowed`)
+  or when malformed (400 `invalid-waiting-on`).
 - `workitem_estimate` re-estimates with a required `size` (`XS` to `XL`). The body
   is exactly `{eventId, size}`. Each call adds an estimate and keeps the earlier
   ones; a completed, failed or canceled item returns 409.

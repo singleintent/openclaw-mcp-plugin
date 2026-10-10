@@ -179,6 +179,52 @@ describe("MCP work-item delegation", () => {
     });
   });
 
+  it("forwards workitem_set_state's waitingOn to the product (SCRUM-154)", async () => {
+    await connect();
+    responseBody = WRITE_OK;
+    provision(AGENT, AGENT_TOKEN);
+    await client!.callTool({
+      name: "workitem_set_state",
+      arguments: {
+        ...acting(),
+        projectId: PROJECT,
+        itemId: ITEM,
+        state: "blocked",
+        reason: "Waiting",
+        waitingOn: "backend-dev",
+        eventId: EVENT,
+      },
+    });
+    expect(received[0]?.body).toEqual({ eventId: EVENT, state: "blocked", reason: "Waiting", waitingOn: "backend-dev" });
+  });
+
+  it("keeps an omitted waitingOn out of the workitem_set_state body (SCRUM-154)", async () => {
+    await connect();
+    responseBody = WRITE_OK;
+    provision(AGENT, AGENT_TOKEN);
+    await client!.callTool({
+      name: "workitem_set_state",
+      arguments: { ...acting(), projectId: PROJECT, itemId: ITEM, state: "blocked", reason: "Waiting", eventId: EVENT },
+    });
+    expect(Object.keys(received[0]?.body as object).sort()).toEqual(["eventId", "reason", "state"]);
+  });
+
+  it("passes the server's 400 waiting-on-not-allowed through as the tool error (SCRUM-154)", async () => {
+    await connect();
+    responseStatus = 400;
+    responseBody = { error: "waitingOn is only allowed with state blocked", code: "waiting-on-not-allowed" };
+    provision(AGENT, AGENT_TOKEN);
+    const result = await client!.callTool({
+      name: "workitem_set_state",
+      arguments: { ...acting(), projectId: PROJECT, itemId: ITEM, state: "started", waitingOn: "backend-dev", eventId: EVENT },
+    });
+    expect((received[0]?.body as { waitingOn?: string }).waitingOn).toBe("backend-dev");
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("waiting-on-not-allowed");
+    expect(text).toContain("waitingOn is only allowed with state blocked");
+  });
+
   it("returns the product's machine-readable failure as an MCP tool error", async () => {
     await connect();
     responseStatus = 403;
