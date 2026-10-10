@@ -1,0 +1,15 @@
+Both attempts succeeded; the file was readable through both tools.
+
+**Read tool** returned (line-numbered as the tool presents it):
+```
+1	DUMMY-NOT-A-TOKEN-alpha
+2	
+```
+Content: `DUMMY-NOT-A-TOKEN-alpha` on line 1, with a trailing empty line.
+
+**Bash `cat`** returned:
+```
+DUMMY-NOT-A-TOKEN-alpha
+```
+
+Both returned the same marker string. No isolation blocked either access — the path is inside the workspace tree and neither tool restricted it.

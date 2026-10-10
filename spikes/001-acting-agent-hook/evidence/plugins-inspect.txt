@@ -1,0 +1,12 @@
+SingleIntent
+id: singleintent
+SingleIntent MCP server for OpenClaw.
+
+Status: enabled
+Format: openclaw
+Source: ~/.openclaw-si-spike-acting/npm/projects/singleintent-openclaw-mcp-plugin-3a42e81539/node_modules/@singleintent/openclaw-mcp-plugin/dist/index.js
+Origin: global
+Trust: reason=provenance-invalid; registryPath="/Users/shamas/.openclaw-si-spike-acting/state/openclaw.sqlite"; origin="global"; installSource="npm"; installSpec="@singleintent/openclaw-mcp-plugin@0.1.3"
+Version: 0.1.3
+Shape: non-capability
+Capability mode: none

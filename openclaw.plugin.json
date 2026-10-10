@@ -17,7 +17,8 @@
       "command": "node",
       "args": ["./dist/mcp-server.js"],
       "env": {
-        "SINGLEINTENT_CONFIG": "${CLAUDE_PLUGIN_ROOT}/instance.json"
+        "SINGLEINTENT_CONFIG": "${CLAUDE_PLUGIN_ROOT}/instance.json",
+        "SINGLEINTENT_SPIKE_LOG": "${CLAUDE_PLUGIN_ROOT}/.spike/mcp-calls.jsonl"
       }
     }
   }

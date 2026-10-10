@@ -1,26 +1,50 @@
 /**
- * Plugin runtime entry.
+ * SPIKE (spike/acting-agent-hook): not production code.
  *
- * This plugin registers no tools here on purpose. Its surface is the stdio MCP
- * server declared in `openclaw.plugin.json` under `mcpServers.singleintent`,
- * which OpenClaw merges into the `bundle-mcp` namespace that the default
- * `coding` and `messaging` tool profiles already admit. Registering tools
- * through `api.registerTool` instead would scope them under this plugin id and
- * oblige every consumer to hand-edit `tools.alsoAllow`, which an install cannot
- * write for itself.
- *
- * The entry exists because `openclaw.extensions` is mandatory: a manifest-only
- * plugin is rejected at install with "package.json missing openclaw.extensions",
- * even when every tool comes from a manifest-declared MCP server.
+ * Registers a before_tool_call hook that stamps `actingAgentId: ctx.agentId`
+ * onto SingleIntent write-tool params, overwriting any model-supplied value,
+ * and logs every hook invocation to `<plugin root>/.spike/hook-calls.jsonl`.
  */
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+
+const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const LOG = process.env.SI_SPIKE_HOOK_LOG ?? "/tmp/si-spike-acting/hook-calls.jsonl"; void PLUGIN_ROOT;
+const WRITE_TOOLS = new Set(["create_workitem", "workitem_set_state"]);
+
+function log(entry: Record<string, unknown>): void {
+  mkdirSync(dirname(LOG), { recursive: true });
+  appendFileSync(LOG, JSON.stringify({ at: new Date().toISOString(), pid: process.pid, ...entry }) + "\n");
+}
+
+/** claude-cli relays `mcp__singleintent__<verb>`; the embedded runtime uses `singleintent__<verb>`. */
+function singleIntentVerb(toolName: string): string | undefined {
+  return /^(?:mcp__)?singleintent__(.+)$/.exec(toolName)?.[1];
+}
 
 export default definePluginEntry({
   // Must equal the manifest `id`.
   id: "singleintent",
   name: "SingleIntent",
   description: "SingleIntent MCP server for OpenClaw.",
-  register() {
-    // Intentionally empty; see the module comment.
+  register(api) {
+    log({ phase: "register", pluginRoot: PLUGIN_ROOT });
+    api.on("before_tool_call", (event, ctx) => {
+      const verb = singleIntentVerb(event.toolName);
+      log({
+        phase: "before_tool_call",
+        toolName: event.toolName,
+        ctxAgentId: ctx.agentId ?? null,
+        sessionKey: ctx.sessionKey ?? null,
+        modelParams: event.params,
+      });
+      if (verb === undefined || !WRITE_TOOLS.has(verb)) return;
+      if (!ctx.agentId) {
+        return { block: true, blockReason: "SingleIntent writes require a calling agent." };
+      }
+      return { params: { ...event.params, actingAgentId: ctx.agentId } };
+    });
   },
 });

@@ -9,7 +9,7 @@
  * Config is resolved by this process rather than handed to it; see src/config.ts
  * for why none of OpenClaw's config surfaces can reach a stdio subprocess.
  */
-import { realpathSync } from "node:fs";
+import { appendFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -257,6 +257,7 @@ export const TOOLS: Tool[] = [
         outcome: { type: "string", maxLength: 5000 },
         evidence: { type: "string", maxLength: 5000 },
         eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
+        actingAgentId: { type: "string", description: "SPIKE: host-supplied; any model value is overwritten." },
       },
     },
   },
@@ -614,6 +615,14 @@ export function createServer(resolveConfig: () => Config): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    // SPIKE: record exactly what the MCP child received.
+    const spikeLog = process.env.SINGLEINTENT_SPIKE_LOG;
+    if (spikeLog) {
+      appendFileSync(
+        spikeLog,
+        JSON.stringify({ at: new Date().toISOString(), pid: process.pid, tool: request.params.name, args }) + "\n",
+      );
+    }
     try {
       const handler = buildHandlers(resolveConfig())[request.params.name];
       if (handler === undefined) {
