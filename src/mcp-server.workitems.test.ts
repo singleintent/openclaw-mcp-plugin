@@ -266,6 +266,38 @@ describe("work-item write credentials", () => {
     expect(received[0]?.body).toEqual({ eventId: EVENT, title: "Task", intent: "Do", estimate: "XL" });
   });
 
+  it("sends workitem_estimate as the acting agent, with exactly eventId and size", async () => {
+    await connect("instance-token");
+    responseBody = WRITE_OK;
+    provision(AGENT, AGENT_TOKEN);
+    const result = (await client!.callTool({
+      name: "workitem_estimate",
+      arguments: { ...acting(), projectId: PROJECT, itemId: ITEM, size: "M", eventId: EVENT },
+    })) as ToolResult;
+    expect(result.isError).toBeFalsy();
+    expect(received[0]).toMatchObject({
+      method: "POST",
+      url: "/api/workitems/" + ITEM + "/estimate?project=" + PROJECT,
+      authorization: "Bearer " + AGENT_TOKEN,
+    });
+    expect(received[0]?.body).toEqual({ eventId: EVENT, size: "M" });
+  });
+
+  it("refuses workitem_estimate locally with no-agent-token, never the instance token", async () => {
+    await connect("instance-token");
+    const result = (await client!.callTool({
+      name: "workitem_estimate",
+      arguments: { ...acting(), projectId: PROJECT, itemId: ITEM, size: "M" },
+    })) as ToolResult;
+    expect(result.isError).toBe(true);
+    expect(received).toEqual([]);
+    expect(result.structuredContent?.error).toMatchObject({
+      code: "no-agent-token",
+      agentId: AGENT,
+      path: join(tokenDir, AGENT),
+    });
+  });
+
   it("re-reads the token file on every call, so rotation needs no restart", async () => {
     await connect();
     responseBody = WRITE_OK;

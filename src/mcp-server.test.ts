@@ -57,6 +57,15 @@ describe("work-item MCP tool contract", () => {
     expect((tool("create_workitem").inputSchema as { required: string[] }).required).not.toContain("estimate");
   });
 
+  it("offers workitem_estimate with a required t-shirt size and no state input", () => {
+    const schema = tool("workitem_estimate").inputSchema as { additionalProperties: boolean; required: string[] };
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.required).toEqual(["projectId", "itemId", "size"]);
+    expect(Object.keys(properties("workitem_estimate"))).toEqual(["projectId", "itemId", "size", "eventId"]);
+    expect(properties("workitem_estimate").size?.enum).toEqual(["XS", "S", "M", "L", "XL"]);
+    expect(tool("workitem_estimate").description).toMatch(/reuse the same UUIDv7 eventId/);
+  });
+
   it("documents the stable event id needed to retry writes safely", () => {
     expect(tool("create_workitem").description).toMatch(/reuse the same UUIDv7 eventId/);
     expect(tool("workitem_set_state").description).toMatch(/reuse the same UUIDv7 eventId/);
@@ -154,7 +163,7 @@ describe("the write verbs", () => {
 
   it("advertises all existing writes alongside the work-item tools", () => {
     for (const name of WRITE_VERBS) expect(TOOLS.map((t) => t.name)).toContain(name);
-    expect(TOOLS).toHaveLength(18);
+    expect(TOOLS).toHaveLength(19);
   });
 
   it("each declare their required arguments, so a model cannot omit one", () => {

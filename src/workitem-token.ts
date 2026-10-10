@@ -34,6 +34,7 @@ import { envVar } from "./names.js";
 export const WORKITEM_WRITE_TOOLS: ReadonlySet<string> = new Set([
   "create_workitem",
   "workitem_set_state",
+  "workitem_estimate",
 ]);
 
 /** Argument names the hook adds. Public only between the hook and this module. */

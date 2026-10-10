@@ -8,6 +8,7 @@ import {
   generateUuidV7,
   getWorkitem,
   listWorkitems,
+  workitemEstimate,
   workitemSetState,
 } from "./workitems.js";
 
@@ -443,4 +444,65 @@ describe("work-item writes", () => {
       "transition open -> completed is not allowed",
     );
   });
+});
+
+describe("work-item re-estimate (SCRUM-150)", () => {
+  it("posts exactly eventId and size to the project-scoped estimate route", async () => {
+    const cfg = await config();
+    await workitemEstimate(cfg, { projectId: PROJECT, itemId: ITEM, size: "L", eventId: EVENT });
+    expect(requests[0]).toMatchObject({
+      method: "POST",
+      url: "/api/workitems/" + ITEM + "/estimate?project=" + PROJECT,
+    });
+    expect(JSON.parse(requests[0]!.body)).toEqual({ eventId: EVENT, size: "L" });
+  });
+
+  it("generates a UUIDv7 and reuses a supplied one byte-for-byte on retry", async () => {
+    const cfg = await config();
+    await workitemEstimate(cfg, { projectId: PROJECT, itemId: ITEM, size: "S" });
+    expect(JSON.parse(requests[0]!.body).eventId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    const input = { projectId: PROJECT, itemId: ITEM, size: "S", eventId: EVENT };
+    await workitemEstimate(cfg, input);
+    responseBody = detail({ deduplicated: true });
+    const retry = await workitemEstimate(cfg, input);
+    expect(requests[1]!.body).toBe(requests[2]!.body);
+    expect(retry.deduplicated).toBe(true);
+  });
+
+  it("refuses missing scope or size before HTTP", async () => {
+    const cfg = await config();
+    await expect(
+      workitemEstimate(cfg, { projectId: PROJECT, itemId: "nope", size: "M" }),
+    ).rejects.toThrow(/itemId/);
+    await expect(
+      workitemEstimate(cfg, { projectId: PROJECT, itemId: ITEM, size: undefined }),
+    ).rejects.toThrow(/size is required/);
+    expect(requests).toEqual([]);
+  });
+
+  const refusals: [string, unknown, number, string, string][] = [
+    ["an unknown size (400 invalid-estimate)", "XXL", 400, "invalid-estimate", "size must be one of XS, S, M, L, XL"],
+    ["a terminal item (409)", "M", 409, "invalid-transition", "a completed item cannot be re-estimated"],
+  ];
+
+  for (const [label, size, status, code, message] of refusals) {
+    it(`passes the server's refusal of ${label} through unchanged`, async () => {
+      const cfg = await config();
+      responseStatus = status;
+      responseBody = { error: message, code };
+      const error = await workitemEstimate(cfg, {
+        projectId: PROJECT,
+        itemId: ITEM,
+        size,
+        eventId: EVENT,
+      }).catch((value: unknown) => value);
+      expect(JSON.parse(requests[0]!.body)).toEqual({ eventId: EVENT, size });
+      expect(error).toBeInstanceOf(ProductApiError);
+      if (status === 409) expect(error).toBeInstanceOf(ProductConflictError);
+      expect(error).toMatchObject({ status, code });
+      expect((error as Error).message).toContain(message);
+    });
+  }
 });

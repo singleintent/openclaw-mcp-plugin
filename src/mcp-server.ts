@@ -41,6 +41,7 @@ import {
   ESTIMATE_SIZES,
   getWorkitem,
   listWorkitems,
+  workitemEstimate,
   workitemSetState,
   WORKITEM_STATES,
 } from "./verbs/workitems.js";
@@ -271,6 +272,26 @@ export const TOOLS: Tool[] = [
         reason: { type: "string", maxLength: 2000 },
         outcome: { type: "string", maxLength: 5000 },
         evidence: { type: "string", maxLength: 5000 },
+        eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
+      },
+    },
+  },
+  {
+    name: "workitem_estimate",
+    description:
+      "Re-estimate a work record with a t-shirt size. Appends a new estimate to the " +
+      "item's history; the original estimate is kept, and the item's state does not " +
+      "move. A completed, failed or canceled item cannot be re-estimated. For safe " +
+      "retries, supply and reuse the same UUIDv7 eventId; if omitted, a UUIDv7 is " +
+      "generated for this call and cannot be reused after a lost response.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["projectId", "itemId", "size"],
+      properties: {
+        projectId: { type: "string", description: "UUID of the project's work-item store." },
+        itemId: { type: "string", description: "UUID of the item in that project." },
+        size: { type: "string", enum: [...ESTIMATE_SIZES] },
         eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
       },
     },
@@ -534,6 +555,17 @@ export function createServer(resolveConfig: () => Config): Server {
           reason: args.reason,
           outcome: args.outcome,
           evidence: args.evidence,
+          eventId: args.eventId,
+        },
+        options,
+      ),
+    workitem_estimate: (args, options) =>
+      workitemEstimate(
+        config,
+        {
+          projectId: args.projectId,
+          itemId: args.itemId,
+          size: args.size,
           eventId: args.eventId,
         },
         options,

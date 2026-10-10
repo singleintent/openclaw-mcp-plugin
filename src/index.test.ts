@@ -5,7 +5,12 @@ const STATE = "/Users/example/.openclaw-si";
 const stateDir = () => STATE;
 
 describe("before_tool_call acting-agent stamp", () => {
-  it.each(["mcp__singleintent__create_workitem", "singleintent__workitem_set_state"])(
+  it.each([
+    "mcp__singleintent__create_workitem",
+    "singleintent__workitem_set_state",
+    "mcp__singleintent__workitem_estimate",
+    "singleintent__workitem_estimate",
+  ])(
     "overwrites forged acting arguments on %s",
     (toolName) => {
       const result = stampActingAgent(

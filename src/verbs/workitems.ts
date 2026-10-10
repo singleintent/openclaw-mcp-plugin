@@ -307,6 +307,37 @@ export async function workitemSetState(
   );
   return assertWriteResult(response, projectId);
 }
+/**
+ * Record a re-estimate (SCRUM-150): a new `estimated` ledger event, never an
+ * edit of the original. The body is exactly `{eventId, size}`; the server
+ * checks the size and refuses a terminal item with 409.
+ */
+export async function workitemEstimate(
+  config: Config,
+  args: {
+    projectId: unknown;
+    itemId: unknown;
+    size: unknown;
+    eventId?: unknown;
+  },
+  options: RequestOptions = {},
+): Promise<WorkitemWriteResult> {
+  const projectId = requireUuid(args.projectId, "projectId");
+  const itemId = requireUuid(args.itemId, "itemId");
+  if (args.size === undefined) throw new Error("size is required");
+  const eventId = requireEventId(args.eventId);
+  const response = await sendJson<unknown>(
+    config,
+    "POST",
+    "/api/workitems/" +
+      encodeURIComponent(itemId) +
+      "/estimate" +
+      projectQuery(projectId),
+    { eventId, size: args.size },
+    options,
+  );
+  return assertWriteResult(response, projectId);
+}
 function assertWriteResult(
   value: unknown,
   projectId: string,
