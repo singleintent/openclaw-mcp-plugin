@@ -12,6 +12,10 @@ const UUID_RE =
 const UUID7_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const WORKITEM_STATES = [
+  // SCRUM-150 dispatch events: each appends a ledger event and the item stays
+  // open. Outcome, evidence and assignee are the server's to refuse (400).
+  "dispatched",
+  "acknowledged",
   "started",
   "blocked",
   "completed",

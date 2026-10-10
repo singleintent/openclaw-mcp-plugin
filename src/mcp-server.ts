@@ -255,6 +255,9 @@ export const TOOLS: Tool[] = [
       "server-validated MVP transition; open is initial-only. The server supplies " +
       "the authenticated actor and timestamp—do not provide either. Reason is " +
       "required for blocked, failed, or canceled; outcome is required for completed. " +
+      "dispatched and acknowledged record a hand-off and pickup on an open item, which " +
+      "stays open; they take an optional reason and no outcome or evidence, and " +
+      "acknowledged needs an earlier dispatched. " +
       "For safe retries, supply and reuse the same UUIDv7 eventId; if omitted, a " +
       "UUIDv7 is generated for this call and cannot be reused after a lost response.",
     inputSchema: {

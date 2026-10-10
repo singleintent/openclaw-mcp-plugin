@@ -48,7 +48,7 @@ describe("work-item MCP tool contract", () => {
     const schema = tool("workitem_set_state").inputSchema as { additionalProperties: boolean; properties: Record<string, { enum?: string[] }> };
     expect(schema.additionalProperties).toBe(false);
     expect(Object.keys(schema.properties)).toEqual(["projectId", "itemId", "state", "reason", "outcome", "evidence", "eventId"]);
-    expect(schema.properties.state?.enum).toEqual(["started", "blocked", "completed", "failed", "canceled"]);
+    expect(schema.properties.state?.enum).toEqual(["dispatched", "acknowledged", "started", "blocked", "completed", "failed", "canceled"]);
     for (const key of ["actor", "agentId", "timestamp", "at"]) expect(schema.properties).not.toHaveProperty(key);
   });
 

@@ -332,6 +332,96 @@ describe("work-item writes", () => {
     expect(requests).toEqual([]);
   });
 
+  it("sends dispatched and acknowledged with an optional reason and nothing else (SCRUM-150)", async () => {
+    const cfg = await config();
+    await workitemSetState(cfg, {
+      projectId: PROJECT,
+      itemId: ITEM,
+      state: "dispatched",
+      reason: "Handed to backend",
+      eventId: EVENT,
+    });
+    await workitemSetState(cfg, {
+      projectId: PROJECT,
+      itemId: ITEM,
+      state: "acknowledged",
+      eventId: EVENT,
+    });
+    expect(requests.map((r) => [r.method, r.url])).toEqual([
+      ["POST", "/api/workitems/" + ITEM + "/state?project=" + PROJECT],
+      ["POST", "/api/workitems/" + ITEM + "/state?project=" + PROJECT],
+    ]);
+    expect(JSON.parse(requests[0]!.body)).toEqual({
+      eventId: EVENT,
+      state: "dispatched",
+      reason: "Handed to backend",
+    });
+    expect(JSON.parse(requests[1]!.body)).toEqual({
+      eventId: EVENT,
+      state: "acknowledged",
+    });
+  });
+
+  const dispatchRefusals: [string, Record<string, unknown>, number, string, string][] = [
+    [
+      "outcome or evidence on a dispatch event (400 invalid-body)",
+      { state: "dispatched", outcome: "Done", evidence: "log" },
+      400,
+      "invalid-body",
+      "dispatched takes no outcome or evidence",
+    ],
+    [
+      "acknowledged without an earlier dispatch (409)",
+      { state: "acknowledged" },
+      409,
+      "invalid-transition",
+      "acknowledged requires a prior dispatched event",
+    ],
+    [
+      "dispatched on a started item (409)",
+      { state: "dispatched" },
+      409,
+      "invalid-transition",
+      "dispatched is not allowed: the item has already started",
+    ],
+    [
+      "acknowledged on a terminal item (409)",
+      { state: "acknowledged" },
+      409,
+      "invalid-transition",
+      "acknowledged is not allowed: the item is completed",
+    ],
+    [
+      // Mocked: the server returns this once Backend's SCRUM-144 commit lands.
+      "a per-agent caller that is not the assignee (403 not-assignee)",
+      { state: "acknowledged" },
+      403,
+      "not-assignee",
+      "only the assignee can acknowledge this item",
+    ],
+  ];
+
+  for (const [label, extra, status, code, message] of dispatchRefusals) {
+    it(`passes the server's ${label} through unchanged`, async () => {
+      const cfg = await config();
+      responseStatus = status;
+      responseBody = { error: message, code };
+      const error = await workitemSetState(cfg, {
+        projectId: PROJECT,
+        itemId: ITEM,
+        eventId: EVENT,
+        ...extra,
+      } as Parameters<typeof workitemSetState>[1]).catch((value: unknown) => value);
+      expect(requests).toHaveLength(1);
+      const sent = JSON.parse(requests[0]!.body);
+      for (const [key, value] of Object.entries(extra)) expect(sent[key]).toBe(value);
+      expect(error).toBeInstanceOf(ProductApiError);
+      if (status === 409) expect(error).toBeInstanceOf(ProductConflictError);
+      expect(error).toMatchObject({ status, code });
+      expect((error as Error).message).toContain(message);
+    });
+  }
+
   it("exposes useful typed API conflict errors with server code and status", async () => {
     const cfg = await config();
     responseStatus = 409;
