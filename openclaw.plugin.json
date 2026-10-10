@@ -20,5 +20,6 @@
         "SINGLEINTENT_CONFIG": "${CLAUDE_PLUGIN_ROOT}/instance.json"
       }
     }
-  }
+  },
+  "skills": ["skills"]
 }
