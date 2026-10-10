@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import {
   createServer as httpServer,
   type Server as HttpServer,
@@ -453,5 +453,114 @@ describe("work-item write credentials", () => {
       expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("actingAgentId");
       expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("actingEngineStateDir");
     }
+  });
+});
+
+/**
+ * SCRUM-144: per-agent writes survive `openclaw plugins update` and the
+ * product's connector bind. Both replace or rewrite files under the plugin's
+ * install root; the agent's token lives under the engine state dir, outside it,
+ * and instance.json carries only the port.
+ */
+describe("work-item writes across plugins update and connector bind", () => {
+  type Api = { server: HttpServer; port: number; auth: (string | undefined)[] };
+  const apis: Api[] = [];
+  let root: string;
+
+  async function startApi(): Promise<Api> {
+    const auth: (string | undefined)[] = [];
+    const server = httpServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        auth.push(req.headers.authorization);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(WRITE_OK));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const api = { server, port: (server.address() as { port: number }).port, auth };
+    apis.push(api);
+    return api;
+  }
+
+  /** What the product's bind writes: `{port}` and nothing else. */
+  function bind(installRoot: string, port: number): void {
+    mkdirSync(installRoot, { recursive: true });
+    writeFileSync(join(installRoot, "instance.json"), JSON.stringify({ port }, null, 2) + "\n");
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "si-install-"));
+  });
+
+  afterEach(async () => {
+    for (const api of apis.splice(0))
+      await new Promise<void>((resolve) => api.server.close(() => resolve()));
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("keeps writing as the same agent after the install root is replaced and rebound", async () => {
+    const tokenPath = provision(AGENT, AGENT_TOKEN);
+    const api = await startApi();
+    // The manifest points SINGLEINTENT_CONFIG at ${CLAUDE_PLUGIN_ROOT}/instance.json;
+    // an update gives the plugin a new install root, so the path moves with it.
+    let installRoot = join(root, "singleintent-0.1.3");
+    bind(installRoot, api.port);
+    mcpServer = createServer(() =>
+      loadConfig({ SINGLEINTENT_CONFIG: join(installRoot, "instance.json") }),
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    client = new Client({ name: "survival-test", version: "0.0.0" });
+    await Promise.all([mcpServer.connect(serverTransport), client.connect(clientTransport)]);
+    const write = () =>
+      client!.callTool({
+        name: "create_workitem",
+        arguments: { ...CREATE_ARGS, ...acting() },
+      }) as Promise<ToolResult>;
+
+    expect((await write()).isError).toBeFalsy();
+
+    // plugins update: the old install root, instance.json included, is removed.
+    rmSync(installRoot, { recursive: true, force: true });
+    installRoot = join(root, "singleintent-0.1.4");
+    expect(existsSync(tokenPath)).toBe(true);
+    // The product's bind writes the new instance.json as the last install step.
+    bind(installRoot, api.port);
+    expect((await write()).isError).toBeFalsy();
+
+    expect(api.auth).toEqual(["Bearer " + AGENT_TOKEN, "Bearer " + AGENT_TOKEN]);
+    expect(readFileSync(tokenPath, "utf8")).toBe(AGENT_TOKEN + "\n");
+  });
+
+  it("follows a rebind to a new port with the agent's token, not a token from instance.json", async () => {
+    const tokenPath = provision(AGENT, AGENT_TOKEN);
+    const before = await startApi();
+    const after = await startApi();
+    const installRoot = join(root, "singleintent-0.1.4");
+    bind(installRoot, before.port);
+    mcpServer = createServer(() =>
+      loadConfig({ SINGLEINTENT_CONFIG: join(installRoot, "instance.json") }),
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    client = new Client({ name: "survival-test", version: "0.0.0" });
+    await Promise.all([mcpServer.connect(serverTransport), client.connect(clientTransport)]);
+    const write = () =>
+      client!.callTool({
+        name: "workitem_set_state",
+        arguments: { ...acting(), projectId: PROJECT, itemId: ITEM, state: "started" },
+      }) as Promise<ToolResult>;
+
+    expect((await write()).isError).toBeFalsy();
+    // A rebind rewrites instance.json in place. A stale shared token left in it
+    // is ignored; the write still goes out with the agent's own token.
+    writeFileSync(
+      join(installRoot, "instance.json"),
+      JSON.stringify({ port: after.port, token: "retired-shared-token" }),
+    );
+    expect((await write()).isError).toBeFalsy();
+
+    expect(before.auth).toEqual(["Bearer " + AGENT_TOKEN]);
+    expect(after.auth).toEqual(["Bearer " + AGENT_TOKEN]);
+    expect(readFileSync(tokenPath, "utf8")).toBe(AGENT_TOKEN + "\n");
   });
 });
