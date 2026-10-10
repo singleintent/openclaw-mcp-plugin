@@ -32,10 +32,17 @@ The server resolves its own configuration. Precedence, highest first:
 | `SINGLEINTENT_TOKEN_FILE` | unset | Path to a token, keeping the secret out of config. Never used for work-item writes |
 | `SINGLEINTENT_WORKITEM_PRINCIPALS_FILE` | unset | Test override that moves the per-agent token directory; see below |
 
-The config file takes `host`, `port` and `token`. An absent file is normal.
+The config file takes `host` and `port`. An absent file is normal.
 Malformed JSON, a non-object file, an out-of-range port, or an unreadable or
 empty token file all **fail loudly** rather than falling back to defaults and
 appearing to work against the wrong host.
+
+The config file never carries a credential. The product writes `instance.json` as
+`{port}` only. A `token` key found there is the retired shared token: it is
+**ignored, not sent**, and the resolved config reports `sources.token` as
+`ignored: <path> "token"`. It is ignored rather than rejected so a stale file does
+not break reads, which need no token. Only `SINGLEINTENT_TOKEN` or
+`SINGLEINTENT_TOKEN_FILE` set the instance token, and work-item writes use neither.
 
 Loopback is the *default*, not a fixed value. `5173` is the product's own port,
 chosen rather than inherited — Vite was deliberately moved to `5174` so the
@@ -103,7 +110,12 @@ It stays rejected on a different ground: it puts a second writer on a file the
 product already writes, and gives the engine a reason to care which product
 instance it points at.
 
-The distin### Work-item write credentials
+The distinction that makes the config file above safe where that bridge is not:
+**a human-written config file has one writer and one intent.** The bridge has one
+writer per profile, racing. Identical file location, completely different safety
+properties.
+
+### Work-item write credentials
 
 `create_workitem`, `workitem_set_state` and `workitem_estimate` authenticate as
 **the calling agent**,
@@ -160,8 +172,8 @@ product:
 | `no-agent-token` | the agent's token file is missing, empty or unreadable; names the agent and the expected path |
 
 A 401 or 403 from the product itself is passed through unchanged. There is no
-fallback to `SINGLEINTENT_TOKEN`, `SINGLEINTENT_TOKEN_FILE`, the config file's
-`token`, or another agent's file. Reads, and every other verb, keep the instance
+fallback to `SINGLEINTENT_TOKEN`, `SINGLEINTENT_TOKEN_FILE`, or another
+agent's file. Reads, and every other verb, keep the instance
 token described above.
 
 **Limitation.** The MCP server cannot tell a hook-stamped `actingAgentId` or
@@ -173,10 +185,12 @@ whichever agent it named, provided that agent's token file exists in the
 resolved directory. The hook is verified on the claude-cli
 runtime; elsewhere, treat work-item writes as unattributed until it is.
 
-GLEINTENT_TOKEN_FILE`, the config file's
-`token`, or another agent's file. The hook is verified on the claude-cli runtime;
-elsewhere, treat writes as unavailable until it is. Reads, and every other verb,
-keep the instance token described above.
+**Surviving update and bind.** Nothing a write needs lives in the install root.
+`openclaw plugins update` replaces the root, `instance.json` included, and the
+product's bind rewrites `instance.json` with the port. The agent's token is under
+the engine state dir and is untouched by both, so the next write after the bind
+goes out with the same token to the new port. Tests in
+`src/mcp-server.workitems.test.ts` cover both.
 
 ### Known-unverified behaviour
 
