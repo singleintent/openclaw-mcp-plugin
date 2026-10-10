@@ -137,6 +137,24 @@ describe("the auth slot", () => {
     expect(config.sources.token).toBe(`${ENV_PREFIX}TOKEN_FILE`);
   });
 
+  it("ignores a token in the config file: instance.json carries the port only (SCRUM-144)", () => {
+    const path = join(scratch(), "instance.json");
+    writeFileSync(path, JSON.stringify({ port: 5180, token: "retired-shared-token" }));
+    const config = loadConfig({ [`${ENV_PREFIX}CONFIG`]: path });
+    expect(config.port).toBe(5180);
+    expect(config.token).toBeUndefined();
+    expect(config).not.toHaveProperty("token");
+    expect(config.sources.token).toBe(`ignored: ${path} "token"`);
+  });
+
+  it("still takes an explicit TOKEN over an ignored config-file token", () => {
+    const path = join(scratch(), "instance.json");
+    writeFileSync(path, JSON.stringify({ port: 5180, token: "retired-shared-token" }));
+    const config = loadConfig({ [`${ENV_PREFIX}CONFIG`]: path, [`${ENV_PREFIX}TOKEN`]: "from-env" });
+    expect(config.token).toBe("from-env");
+    expect(config.sources.token).toBe(`${ENV_PREFIX}TOKEN`);
+  });
+
   it("prefers TOKEN_FILE over TOKEN", () => {
     const path = join(scratch(), "token");
     writeFileSync(path, "from-file");
