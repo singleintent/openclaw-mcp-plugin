@@ -171,12 +171,12 @@ describe("readWorkitemToken", () => {
  */
 describe("engine state dir agreement", () => {
   it("dirname(resolveConfigPath) is the si profile dir", () => {
-    const env = { OPENCLAW_CONFIG_PATH: "/Users/shamas/.openclaw-si/openclaw.json" };
-    expect(dirname(resolveConfigPath(env))).toBe("/Users/shamas/.openclaw-si");
+    const env = { OPENCLAW_CONFIG_PATH: "/Users/example/.openclaw-si/openclaw.json" };
+    expect(dirname(resolveConfigPath(env))).toBe("/Users/example/.openclaw-si");
   });
 
   it("the server's OPENCLAW_CONFIG_PATH fallback lands in the same directory as the hook", () => {
-    const env = { OPENCLAW_CONFIG_PATH: "/Users/shamas/.openclaw-si/openclaw.json" };
+    const env = { OPENCLAW_CONFIG_PATH: "/Users/example/.openclaw-si/openclaw.json" };
     expect(resolveTokenDir(undefined, env)).toBe(
       resolveTokenDir(dirname(resolveConfigPath(env)), {}),
     );
