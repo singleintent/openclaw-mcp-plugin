@@ -181,6 +181,53 @@ describe("work-item writes", () => {
     expect(result.event.actor).toBe("agent-from-server");
   });
 
+  it("sends an optional estimate on create, and only when given (SCRUM-150)", async () => {
+    const cfg = await config();
+    await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      estimate: "M",
+      eventId: EVENT,
+    });
+    expect(JSON.parse(requests[0]!.body)).toEqual({
+      eventId: EVENT,
+      title: "Task",
+      intent: "Do it",
+      estimate: "M",
+    });
+    await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      estimate: undefined,
+      eventId: EVENT,
+    });
+    expect(JSON.parse(requests[1]!.body)).not.toHaveProperty("estimate");
+  });
+
+  it("leaves estimate validation to the server and keeps its 400 invalid-estimate", async () => {
+    const cfg = await config();
+    responseStatus = 400;
+    responseBody = {
+      error: "estimate must be one of XS, S, M, L, XL",
+      code: "invalid-estimate",
+    };
+    const error = await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      estimate: "XXL",
+      eventId: EVENT,
+    }).catch((value: unknown) => value);
+    expect(JSON.parse(requests[0]!.body).estimate).toBe("XXL");
+    expect(error).toBeInstanceOf(ProductApiError);
+    expect(error).toMatchObject({ status: 400, code: "invalid-estimate" });
+    expect((error as Error).message).toContain(
+      "estimate must be one of XS, S, M, L, XL",
+    );
+  });
+
   it("generates a UUIDv7 when the optional id is omitted", async () => {
     const cfg = await config();
     await createWorkitem(cfg, {

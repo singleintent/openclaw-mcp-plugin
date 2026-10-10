@@ -52,6 +52,11 @@ describe("work-item MCP tool contract", () => {
     for (const key of ["actor", "agentId", "timestamp", "at"]) expect(schema.properties).not.toHaveProperty(key);
   });
 
+  it("offers create_workitem an optional t-shirt estimate", () => {
+    expect(properties("create_workitem").estimate?.enum).toEqual(["XS", "S", "M", "L", "XL"]);
+    expect((tool("create_workitem").inputSchema as { required: string[] }).required).not.toContain("estimate");
+  });
+
   it("documents the stable event id needed to retry writes safely", () => {
     expect(tool("create_workitem").description).toMatch(/reuse the same UUIDv7 eventId/);
     expect(tool("workitem_set_state").description).toMatch(/reuse the same UUIDv7 eventId/);

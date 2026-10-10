@@ -38,6 +38,7 @@ import { sendMessage } from "./verbs/send-message.js";
 import { updateTemplate } from "./verbs/update-template.js";
 import {
   createWorkitem,
+  ESTIMATE_SIZES,
   getWorkitem,
   listWorkitems,
   workitemSetState,
@@ -238,6 +239,11 @@ export const TOOLS: Tool[] = [
         projectId: { type: "string", description: "UUID of the project that owns this work record." },
         title: { type: "string", minLength: 1, maxLength: 200 },
         intent: { type: "string", minLength: 1, maxLength: 10000 },
+        estimate: {
+          type: "string",
+          enum: [...ESTIMATE_SIZES],
+          description: "Optional t-shirt size recorded as the item's original estimate.",
+        },
         eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
       },
     },
@@ -510,6 +516,7 @@ export function createServer(resolveConfig: () => Config): Server {
           projectId: args.projectId,
           title: args.title,
           intent: args.intent,
+          estimate: args.estimate,
           eventId: args.eventId,
         },
         options,

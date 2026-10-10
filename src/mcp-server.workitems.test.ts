@@ -255,6 +255,17 @@ describe("work-item write credentials", () => {
     expect(JSON.stringify(received[0]?.body)).not.toMatch(/acting/);
   });
 
+  it("forwards create_workitem's estimate to the product (SCRUM-150)", async () => {
+    await connect();
+    responseBody = WRITE_OK;
+    provision(AGENT, AGENT_TOKEN);
+    await client!.callTool({
+      name: "create_workitem",
+      arguments: { ...CREATE_ARGS, estimate: "XL", ...acting() },
+    });
+    expect(received[0]?.body).toEqual({ eventId: EVENT, title: "Task", intent: "Do", estimate: "XL" });
+  });
+
   it("re-reads the token file on every call, so rotation needs no restart", async () => {
     await connect();
     responseBody = WRITE_OK;

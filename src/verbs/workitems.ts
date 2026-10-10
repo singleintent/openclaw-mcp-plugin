@@ -19,6 +19,8 @@ export const WORKITEM_STATES = [
   "canceled",
 ] as const;
 export type WorkitemState = (typeof WORKITEM_STATES)[number];
+/** T-shirt sizes the server accepts for `estimate` and `size` (SCRUM-150). */
+export const ESTIMATE_SIZES = ["XS", "S", "M", "L", "XL"] as const;
 
 export type WorkitemProjection = {
   id: string;
@@ -204,6 +206,7 @@ export async function createWorkitem(
     projectId: unknown;
     title: unknown;
     intent: unknown;
+    estimate?: unknown;
     eventId?: unknown;
   },
   options: RequestOptions = {},
@@ -226,11 +229,15 @@ export async function createWorkitem(
       "intent must be non-empty text no longer than 10000 characters",
     );
   const eventId = requireEventId(args.eventId);
+  // The size is the server's to check: an unknown one comes back as its own
+  // 400 invalid-estimate rather than a plugin message saying the same thing.
+  const body: Record<string, unknown> = { eventId, title: args.title, intent: args.intent };
+  if (args.estimate !== undefined) body.estimate = args.estimate;
   const response = await sendJson<unknown>(
     config,
     "POST",
     "/api/workitems" + projectQuery(projectId),
-    { eventId, title: args.title, intent: args.intent },
+    body,
     options,
   );
   return assertWriteResult(response, projectId);
