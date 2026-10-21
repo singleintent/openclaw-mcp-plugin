@@ -2,7 +2,7 @@
   "id": "singleintent",
   "name": "SingleIntent",
   "description": "SingleIntent MCP server for OpenClaw.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "activation": {
     "onStartup": true
   },
@@ -20,5 +20,6 @@
         "SINGLEINTENT_CONFIG": "${CLAUDE_PLUGIN_ROOT}/instance.json"
       }
     }
-  }
+  },
+  "skills": ["skills"]
 }

@@ -22,6 +22,7 @@ import { listAgents } from "./verbs/list-agents.js";
 import { listConnections } from "./verbs/list-connections.js";
 import { listProjects } from "./verbs/list-projects.js";
 import { listTemplates } from "./verbs/list-templates.js";
+import { readWorkitemToken } from "./workitem-token.js";
 
 const config = loadConfig({});
 
@@ -260,7 +261,7 @@ describe("live product", () => {
  * The write verbs against the real routes, without writing anything.
  *
  * **Why the success paths are not automated here, stated rather than left as a
- * gap.** The product has no delete route. A suite that exercised `create_project`
+ * gap.** This connector cannot remove what it creates. A suite that exercised `create_project`
  * or `create_agent` on every run would leave a row behind on every run, permanently,
  * in whoever's product it ran against — and `apply_role`, `create_connection` and
  * `send_message` would additionally spend a billed agent turn each time and change
@@ -281,6 +282,24 @@ describe("live product", () => {
 describe("live product — write verbs, on paths that write nothing", () => {
   /** Well-formed and mints-as-the-product-does, but matching no project. */
   const UNKNOWN_PROJECT = "00000000-0000-4000-8000-000000000000";
+
+  /**
+   * SCRUM-185: every write verb goes out as the calling agent, never with the
+   * instance token. A case below that sends a write request to the product runs
+   * only with a per-agent credential set up: `SINGLEINTENT_LIVE_WRITE_AGENT`
+   * names the agent, and its token is read the way the ticket path reads it
+   * (`SINGLEINTENT_WORKITEM_PRINCIPALS_FILE` or `OPENCLAW_CONFIG_PATH`). Without
+   * that, those cases skip with a warning rather than write as the instance.
+   */
+  const writeConfig = (): typeof config | undefined => {
+    const agentId = process.env.SINGLEINTENT_LIVE_WRITE_AGENT?.trim();
+    if (!agentId) {
+      console.warn("[live] skipping write request: SINGLEINTENT_LIVE_WRITE_AGENT is not set (no per-agent token setup)");
+      return undefined;
+    }
+    const { token } = readWorkitemToken(agentId, undefined);
+    return { ...config, token, sources: { ...config.sources, token: "workitem-token" } };
+  };
 
   it("refuses a malformed argument before any request reaches the product", async () => {
     // No `reachable` guard: the point is that the product is never contacted, so
@@ -306,9 +325,11 @@ describe("live product — write verbs, on paths that write nothing", () => {
 
   it("reaches the real POST /api/agents and is refused for an unknown project", async () => {
     if (!reachable) return;
+    const writer = writeConfig();
+    if (writer === undefined) return;
     // Proves the body is accepted as well-formed by the route — it got past the
     // name and projectId checks to the project lookup — while creating nothing.
-    const error = await createAgent(config, {
+    const error = await createAgent(writer, {
       name: "singleintent-connector-probe",
       projectId: UNKNOWN_PROJECT,
     }).catch((e: Error) => e);
@@ -328,6 +349,8 @@ describe("live product — write verbs, on paths that write nothing", () => {
 
   it("surfaces an already-applied role as a conflict, not as an outage", async () => {
     if (!reachable) return;
+    const writer = writeConfig();
+    if (writer === undefined) return;
     // Reads the roster for an agent that already carries a role, so the fixture is
     // the live product's own state rather than an id hard-coded here.
     const roster = await listAgents(config, { limit: 200 });
@@ -336,7 +359,7 @@ describe("live product — write verbs, on paths that write nothing", () => {
     const template = templates.templates[0];
     if (roled === undefined || template === undefined) return;
 
-    const error = await applyRole(config, {
+    const error = await applyRole(writer, {
       agentId: roled.id,
       templateId: template.id,
     }).catch((e: Error) => e);
@@ -350,12 +373,14 @@ describe("live product — write verbs, on paths that write nothing", () => {
 
   it("surfaces an existing connection as a conflict, before spending a turn", async () => {
     if (!reachable) return;
+    const writer = writeConfig();
+    if (writer === undefined) return;
     const existing = (await listConnections(config, { limit: 200 })).connections.find(
       (connection) => connection.from !== null && connection.to !== null,
     );
     if (existing === undefined) return;
 
-    const error = await createConnection(config, {
+    const error = await createConnection(writer, {
       from: existing.from as string,
       to: existing.to as string,
     }).catch((e: Error) => e);

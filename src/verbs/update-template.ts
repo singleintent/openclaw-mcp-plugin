@@ -36,7 +36,7 @@
  *
  * There is no delete route, but there is nothing to delete: the previous name and
  * content can be put back by calling this again. It is the only verb in the write
- * surface that can be undone, which is why it does not carry `NOT_REVERSIBLE`. The
+ * surface that can be undone, which is why it has no `REVERSIBILITY` entry. The
  * previous values are not returned by the product, so a caller that wants to be
  * able to put them back reads the template first.
  */

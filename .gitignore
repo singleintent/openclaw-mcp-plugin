@@ -8,3 +8,6 @@ dist/
 # allowlist excludes it) but it kept the tree permanently dirty, which the
 # publish preflight reads as a reason to refuse.
 memory/
+
+# Call tickets the hook writes at runtime (SCRUM-182); never content.
+.call-tickets/

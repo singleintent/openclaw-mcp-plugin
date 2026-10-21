@@ -233,9 +233,14 @@ function resolveToken(
     return tokenEnv;
   }
 
-  if (typeof file.token === "string" && file.token.length > 0) {
-    sources.token = path;
-    return file.token;
+  // The config file carries no credential (SCRUM-144). It is the product's
+  // install-time binding, and the product writes only `{port}` there. A token
+  // found in it is the retired shared token, so it is ignored rather than sent,
+  // and the source says so. Ignored, not rejected: rejecting would fail every
+  // verb on an instance until the file is cleaned, and reads need no token.
+  if (file.token !== undefined) {
+    sources.token = `ignored: ${path} "token"`;
+    return undefined;
   }
 
   sources.token = "unset";

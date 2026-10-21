@@ -98,14 +98,34 @@ export function requireUuid(value: unknown, name: string): string {
 }
 
 /**
- * The sentence every irreversible verb ends with, written once.
+ * What each irreversible verb says about undoing it, written once per verb
+ * (SCRUM-191).
  *
- * Five of the seven write verbs cannot be undone through this connector, and the
- * reason is the same for all of them: the product exposes no delete route, so
- * there is no endpoint to wrap. Saying it per verb in per-verb words would let the
- * wording drift until one verb sounded more reversible than another, which is the
- * one thing this sentence exists to prevent.
+ * None of the five can be undone through this connector, which wraps no delete,
+ * archive or detach route. The reasons differ, so one shared sentence was wrong
+ * for some of them: the product UI can delete an agent (`DELETE /api/agents/:id`)
+ * or detach it from a project (`DELETE /api/projects/:id/agents/:agentId`), and can
+ * archive a project (`POST /api/ents`, kind `archive`), while templates, roles and
+ * connections have no removal route at all. Each sentence opens with the same
+ * words so none sounds more reversible than it is, then names the undo route
+ * where one exists. Those routes are UI-only (origin-gated), which is why the
+ * sentences send the caller to the product rather than offering a verb.
  */
-export const NOT_REVERSIBLE =
-  "This cannot be undone from here: the product exposes no delete route, so this " +
-  "connector has none.";
+export const REVERSIBILITY = {
+  create_project:
+    "This cannot be undone from here. The product has no route to delete a project; " +
+    "it can only be archived, from the product's UI (POST /api/ents, kind archive), " +
+    "which this connector does not offer.",
+  create_agent:
+    "This cannot be undone from here. The product's UI can delete the agent " +
+    "(DELETE /api/agents/:id) or detach it from the project " +
+    "(DELETE /api/projects/:id/agents/:agentId); this connector offers neither.",
+  create_template:
+    "This cannot be undone from here. The product has no route to delete a template.",
+  apply_role:
+    "This cannot be undone from here. The product has no route to clear a role.",
+  create_connection:
+    "This cannot be undone from here. The product has no route to delete a connection.",
+} as const satisfies Record<string, string>;
+
+export type IrreversibleVerb = keyof typeof REVERSIBILITY;

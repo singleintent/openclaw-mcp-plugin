@@ -32,26 +32,54 @@
  * If the two-step flow is wanted through MCP, the thing to add is a verb that wraps
  * the onboarding call by itself. That keeps one verb to one call.
  *
- * ## Nothing here can be undone, and two of these arguments are permanent
+ * ## Nothing here can undo it, and the name is permanent
  *
- * There is no delete route, so there is no delete verb. An agent's identity is not
- * editable afterwards, and its workspace is derived from the project's working
- * directory at creation and never changed. So `name`, `project_id` and
- * `workspace_subpath` are each set once, for good: a wrong one means creating
- * another agent, not correcting this one. The verb description says so, because
- * this is the point at which a caller can still act on it.
+ * No verb here deletes an agent or edits its identity, so `name` is set once, for
+ * good: a wrong one means creating another agent, not correcting this one. The
+ * verb description says so, because this is the point at which a caller can still
+ * act on it. `project_id` makes the agent a member of that project; this surface
+ * has no verb that changes membership afterwards. The product's UI can delete the
+ * agent or detach it from the project, and the description names both routes
+ * (`REVERSIBILITY.create_agent`).
  *
- * ## `workspace_subpath` is relative, and the product enforces that
+ * ## The workspace is not the project directory (SCRUM-130)
  *
- * The workspace is the project's working directory, or that directory joined with
- * `workspace_subpath`. The product rejects anything that escapes the project
- * directory. This verb does not re-implement that check — it would be a second
- * opinion about a path this layer cannot resolve, since the project's working
- * directory is only known to the product. What it does do is refuse an absolute
- * path, which cannot be a subpath under any resolution and is the mistake the
- * argument's name invites.
+ * The product assigns each new agent its own workspace under the active OpenClaw
+ * profile, separate from the project's working directory. Project membership is
+ * recorded explicitly and is what grants access; where the workspace sits neither
+ * grants nor restricts it. A separate workspace is not a sandbox: the agent's tools
+ * run as the same OS user and can reach the project directory and anything else
+ * that user can.
+ *
+ * ## There is no `workspace_subpath` (SCRUM-188)
+ *
+ * The product no longer applies one. It accepts a well-formed `workspaceSubpath`
+ * only to report it back as `applied: false`, so offering the
+ * argument would let a caller believe it chose a location it did not. It is out of
+ * the schema, and the verb never sends `workspaceSubpath` even if handed one.
+ *
+ * ## A create can succeed partially, and the caller must be told (SCRUM-190)
+ *
+ * After `agents.create` the product polls OpenClaw's roster for up to 5 s, because
+ * a config hot reload can lag the create. Two outcomes are not plain successes:
+ *
+ * - **Roster unverified (2xx).** The agent exists and has project access, taken
+ *   from OpenClaw's own create response, but the roster never showed it. The
+ *   product answers 200 with `partial: true` and `rosterUnverified: true`. This
+ *   verb returns the agent with `partial: true`, the product's `nextAction` and a
+ *   `warning` saying not to create it again, rather than a bare success.
+ * - **Orphan (502).** OpenClaw created the agent but the roster reports a
+ *   missing or different workspace, so the product attached it to no project.
+ *   This verb fails with {@link CreateAgentPartialError}, which names the created
+ *   agent id and the product's `nextAction` (delete it). The connector cannot
+ *   delete; the caller must not simply call `create_agent` again.
+ *
+ * The client timeout covers the product's whole create: the pre-create roster
+ * read, `agents.create`, the 5 s poll (whose final read can overrun by about
+ * 2 s), and the AGENTS.md, membership and token steps. The 10 s default could
+ * abort a create that then completed, so this verb sets its own.
  */
-import { sendJson, type RequestOptions } from "../client.js";
+import { ProductApiError, sendJson, type RequestOptions } from "../client.js";
 import type { Config } from "../config.js";
 import { asString } from "./paging.js";
 import { optionalText, requireFilledText, requireUuid } from "./write-args.js";
@@ -68,32 +96,52 @@ export type CreateAgentResult = {
    * drops nothing — the same outcome as `list_connections`.
    */
   created: Record<string, unknown>;
+  /** Present and true only when the product reports a partial create. */
+  partial?: true;
+  /** OpenClaw's roster did not confirm the agent within the product's bound. */
+  rosterUnverified?: true;
+  /** The product's next step for a partial create, passed through. */
+  nextAction?: unknown;
+  /** One sentence for the caller, so a partial create never reads as success. */
+  warning?: string;
 };
+
+/**
+ * The client budget for `POST /api/agents`. The product's roster poll alone is
+ * 5 s; see the module comment for the rest. Comfortably above the worst case.
+ */
+export const CREATE_AGENT_TIMEOUT_MS = 30_000;
+
+/**
+ * The product created the agent in OpenClaw but could not finish, so the agent
+ * exists in a state the caller has to act on. Carries the created id and the
+ * product's next action, so a caller can tell this from a failure that created
+ * nothing.
+ */
+export class CreateAgentPartialError extends ProductApiError {
+  constructor(
+    message: string,
+    status: number,
+    code: string | undefined,
+    responseBody: unknown,
+    readonly createdAgentId: string,
+    readonly nextAction: unknown,
+  ) {
+    super(message, status, code, responseBody);
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const nextActionMessage = (nextAction: unknown): string | null =>
+  isRecord(nextAction) ? asString(nextAction.message) : null;
 
 export type CreateAgentInput = {
   name?: unknown;
   projectId?: unknown;
-  workspaceSubpath?: unknown;
   model?: unknown;
 };
-
-/**
- * Refused locally because it cannot be right under any resolution: a subpath is
- * joined onto the project's working directory, and an absolute path would either
- * escape it or be a confusing way of writing a path that does not. The product
- * rejects the escape too; this refuses it before spending a Gateway call.
- */
-function requireRelativeSubpath(value: unknown): string | undefined {
-  const subpath = optionalText(value, "workspace_subpath");
-  if (subpath === undefined) return undefined;
-  if (subpath.startsWith("/")) {
-    throw new Error(
-      `workspace_subpath must be relative to the project's working directory, ` +
-        `got the absolute path ${JSON.stringify(subpath)}`,
-    );
-  }
-  return subpath;
-}
 
 export async function createAgent(
   config: Config,
@@ -104,17 +152,18 @@ export async function createAgent(
   const body = {
     name: requireFilledText(input.name, "name"),
     projectId: requireUuid(input.projectId, "project_id"),
-    workspaceSubpath: requireRelativeSubpath(input.workspaceSubpath),
     model: optionalText(input.model, "model"),
   };
 
-  const created = await sendJson<Record<string, unknown>>(
-    config,
-    "POST",
-    "/api/agents",
-    body,
-    options,
-  );
+  let created: Record<string, unknown>;
+  try {
+    created = await sendJson<Record<string, unknown>>(config, "POST", "/api/agents", body, {
+      ...options,
+      timeoutMs: options.timeoutMs ?? CREATE_AGENT_TIMEOUT_MS,
+    });
+  } catch (error) {
+    throw partialCreateError(error) ?? error;
+  }
   if (created === null || typeof created !== "object" || Array.isArray(created)) {
     throw new Error("the product returned a non-object response for POST /api/agents");
   }
@@ -129,5 +178,50 @@ export async function createAgent(
         "cannot be addressed — call list_agents to find out whether it was created",
     );
   }
-  return { agentId, created };
+  const verification = isRecord(created.verification) ? created.verification : {};
+  const partial =
+    created.partial === true ||
+    created.rosterUnverified === true ||
+    verification.openclawRosterVerified === false;
+  if (!partial) return { agentId, created };
+
+  const next = nextActionMessage(created.nextAction);
+  return {
+    agentId,
+    partial: true,
+    ...(created.rosterUnverified === true || verification.openclawRosterVerified === false
+      ? { rosterUnverified: true as const }
+      : {}),
+    ...(created.nextAction !== undefined ? { nextAction: created.nextAction } : {}),
+    warning:
+      `Partial create: agent ${agentId} was created, but the product did not fully ` +
+      `verify it${typeof created.code === "string" ? ` (${created.code})` : ""}. ` +
+      `Do not call create_agent again for it.` +
+      (next ? ` Next action: ${next}` : ` Re-read it with list_agents.`),
+    created,
+  };
+}
+
+/**
+ * Turns a failed create that nonetheless created an agent into an error that
+ * names it. Anything else is left for the caller to rethrow unchanged.
+ */
+function partialCreateError(error: unknown): CreateAgentPartialError | undefined {
+  if (!(error instanceof ProductApiError) || !isRecord(error.responseBody)) return undefined;
+  const response = error.responseBody;
+  const createdAgentId = asString(response.createdAgentId);
+  if (response.openclawAgentCreated !== true || createdAgentId === null) return undefined;
+  const next = nextActionMessage(response.nextAction);
+  return new CreateAgentPartialError(
+    `${error.message}\n\nOpenClaw DID create agent ${createdAgentId}, but the product ` +
+      `could not finish setting it up, so it is not usable as created. Do not call ` +
+      `create_agent again until this agent is dealt with.` +
+      (next ? ` Next action: ${next}` : "") +
+      ` This connector cannot delete agents; use the product's UI.`,
+    error.status,
+    error.code,
+    error.responseBody,
+    createdAgentId,
+    response.nextAction ?? null,
+  );
 }

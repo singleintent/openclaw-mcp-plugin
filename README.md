@@ -8,6 +8,11 @@ stdio process.
 `get_backlog`, `get_activity`. All reads; no write verb exists yet. Everything
 below is verified against OpenClaw 2026.9.5 and a running product.
 
+**Requires OpenClaw 2026.9.8 or later** (`minHostVersion`, `compat.pluginApi`
+and the peer range are all `>=2026.9.8`): the work-item write hook imports
+`resolveConfigPath` from `openclaw/plugin-sdk/state-paths`, which 2026.9.5 does
+not export.
+
 ## Configuration
 
 The server resolves its own configuration. Precedence, highest first:
@@ -23,13 +28,21 @@ The server resolves its own configuration. Precedence, highest first:
 | `SINGLEINTENT_HOST` | `127.0.0.1` | Product host |
 | `SINGLEINTENT_PORT` | `5173` | Product port |
 | `SINGLEINTENT_CONFIG` | — | Config file path override |
-| `SINGLEINTENT_TOKEN` | unset | Auth token; no header is sent while unset |
-| `SINGLEINTENT_TOKEN_FILE` | unset | Path to a token, keeping the secret out of config |
+| `SINGLEINTENT_TOKEN` | unset | Auth token for reads; no header is sent while unset. Never used for writes |
+| `SINGLEINTENT_TOKEN_FILE` | unset | Path to a token, keeping the secret out of config. Never used for writes |
+| `SINGLEINTENT_WORKITEM_PRINCIPALS_FILE` | unset | Test override that moves the per-agent token directory; see below |
 
-The config file takes `host`, `port` and `token`. An absent file is normal.
+The config file takes `host` and `port`. An absent file is normal.
 Malformed JSON, a non-object file, an out-of-range port, or an unreadable or
 empty token file all **fail loudly** rather than falling back to defaults and
 appearing to work against the wrong host.
+
+The config file never carries a credential. The product writes `instance.json` as
+`{port}` only. A `token` key found there is the retired shared token: it is
+**ignored, not sent**, and the resolved config reports `sources.token` as
+`ignored: <path> "token"`. It is ignored rather than rejected so a stale file does
+not break reads, which need no token. Only `SINGLEINTENT_TOKEN` or
+`SINGLEINTENT_TOKEN_FILE` set the instance token, and writes use neither.
 
 Loopback is the *default*, not a fixed value. `5173` is the product's own port,
 chosen rather than inherited — Vite was deliberately moved to `5174` so the
@@ -102,6 +115,156 @@ The distinction that makes the config file above safe where that bridge is not:
 writer per profile, racing. Identical file location, completely different safety
 properties.
 
+### Work-item write credentials
+
+Every write verb authenticates as **the calling agent**, not as the instance:
+the four work-item writes (`create_workitem`, `workitem_set_state`,
+`workitem_estimate`, `workitem_note`) and, since SCRUM-185, the seven other
+writes (`send_message`, `apply_role`, `create_agent`, `create_project`,
+`create_template`, `update_template`, `create_connection`). The product records
+the agent its bearer token maps to as the event's actor, so each agent needs its
+own token, and the plugin sends only that agent's:
+
+```
+<engine state dir>/singleintent/workitem-tokens/<agentId>
+```
+
+`<engine state dir>` is the directory holding the OpenClaw profile's
+`openclaw.json`, which is also where the product keeps its hashed
+`workitem-principals.json`. The file holds only the token (43-character
+base64url) and should be mode `0600` in a `0700` directory. It is outside this
+package's install root on purpose: `openclaw plugins update` and a reinstall from
+the product replace the install root, and the tokens survive both. The file is
+re-read on every write, so rotating or revoking a token is replacing or deleting
+the file; no restart is needed.
+
+How the agent is known: a **call ticket**. The plugin entry registers a
+`before_tool_call` hook that, for those eleven tools, writes a short-lived ticket
+file naming the Gateway's `ctx.agentId` and `dirname(resolveConfigPath())`
+(from the public `openclaw/plugin-sdk/state-paths` subpath), plus the session
+key, run id, verb, a sha256 digest of the arguments and an expiry. The MCP
+server claims that ticket and takes the agent and engine state dir from it. **No
+request field is ever identity**: a call carrying any `acting*` argument (the
+retired stamps) is refused by the hook and by the server.
+
+Tickets live in `<plugin root>/.call-tickets/` (mode `0700`, files `0600`),
+named by the sha256 of the call's key. Both the hook and the server refuse the
+directory (`call-ticket-dir-unsafe`) if it is a symlink, not a directory, not
+owned by the current user, or has any group or other permission bit; a
+directory that already exists is checked as found. The server finds the directory from its
+own module path and the hook from the root the Gateway reports (`api.rootDir`;
+OpenClaw runs hook code from a capture copy elsewhere), so the server needs no
+environment from its launcher. The key:
+
+| Runtime | Hook writes the ticket under | Server reads the key from |
+| --- | --- | --- |
+| claude-cli | `toolCallId` (Claude's `tool_use_id`) | `_meta["claudecode/toolUseId"]` |
+| Codex native | `toolCallId` (Codex `tool_use_id`) | `_meta.callId` |
+| embedded (OpenClaw's own MCP client) | a fresh 256-bit nonce | the `ticketId` argument the hook adds |
+
+On the two native runtimes (tool names `mcp__singleintent__*`) the hook does not
+change the arguments; Codex's hook relay refuses any rewrite. On the embedded
+runtime (`singleintent__*`) it adds `ticketId` and nothing else. If OpenClaw
+names no agent, or supplies no call id on a native call, or the model sent its
+own `ticketId`, the hook blocks the call. The server needs exactly one key, strips
+`ticketId`, claims the ticket once (an exclusive `.used` tombstone first, then
+an atomic rename), and requires that it is
+unexpired, issued for this verb, and issued for these exact arguments. The
+`_meta` keys are undocumented runtime behaviour, verified on Claude Code 2.1.296
+and Codex 0.158.0 under OpenClaw 2026.9.8; a runtime that stops sending them
+fails closed.
+
+Tickets expire after 180 s. That outlasts the default plugin-approval wait
+(120 s plus 10 s Gateway grace) that another plugin's `requireApproval` can put
+between the hook and the request. An approval answered later than that fails
+closed with `call-ticket-expired`. Expired and unclaimed tickets are swept on the
+next write.
+
+**Origin (SCRUM-148).** The ticket's session key is the Gateway ctx's
+`sessionKey`, and its run id is `ctx.runId` (or the event's `runId` when ctx has
+none). When the claimed ticket carries a non-empty session key, the MCP server
+sends `origin: { sessionKey, runId? }` in the body of `create_workitem`,
+`workitem_set_state`, `workitem_estimate` and `workitem_note`, with `runId` only
+when the ticket's
+run id is non-empty. With no session key the body has no `origin` key, even if
+there is a run id. The origin comes only from the ticket: a call carrying an
+`origin`, `sessionKey` or `runId` argument is refused, by the hook
+(`[origin-args-refused]`) and by the server (`origin-args-refused`); no tool
+declares any of them. The product refuses an origin whose session key is not
+`agent:<token's agent>:…`, so the server sends no `origin` when the ticket's
+session key is outside `agent:<ticket agentId>:`; the write keeps its actor and
+only loses the link. The seven other writes never send `origin`: the product has
+no origin contract on their routes, so the ticket's session key and run id stay
+local to the plugin.
+
+**The seven other writes (SCRUM-185).** `send_message`, `apply_role`,
+`create_agent`, `create_project`, `create_template`, `update_template` and
+`create_connection` take exactly the path above: the hook tickets them on both
+`mcp__singleintent__*` and `singleintent__*` tool names, and the server refuses
+`acting*` and origin arguments, claims the ticket, and replaces the instance
+token with the ticketed agent's. Their refusals use the same codes. Until the
+product authenticates these routes, it ignores the bearer on them, so the agent's
+token is carried but not yet recorded; the behaviour change visible today is
+**`no-agent-token`**: an agent with no provisioned token file can no longer
+create projects, agents, templates or connections, apply roles or send messages
+through this plugin. Before SCRUM-185 those calls went out with the instance
+token and succeeded; now they are refused locally and nothing is sent.
+Provision the agent's token from the product first.
+
+The token directory is resolved, first match wins:
+
+1. `$SINGLEINTENT_WORKITEM_PRINCIPALS_FILE` set:
+   `<dirname(path.resolve(file))>/singleintent/workitem-tokens`, the way the
+   product resolves it.
+2. The ticket's engine state dir (absolute only).
+3. `dirname($OPENCLAW_CONFIG_PATH)` when that is set and absolute.
+4. Otherwise the write is refused locally.
+
+No other source is consulted: not the OpenClaw state-dir environment variable,
+the install path, or the working directory.
+
+**Writes fail closed.** Every refusal is local and makes no HTTP request. The
+hook's block reason carries `[code]`: `no-agent-id`, `acting-args-refused`,
+`origin-args-refused`, `model-ticket-id`, `no-tool-call-id`, `call-ticket-conflict`, `call-key-reused`,
+`call-ticket-dir-unsafe`, `call-ticket-write-failed`. The server's tool error carries
+`structuredContent.error` with a plugin-owned `code`, `agentId`, `path` and
+`message`, and no HTTP `status`:
+
+| `code` | Cause |
+| --- | --- |
+| `acting-args-refused` | the request carried an `acting*` argument |
+| `origin-args-refused` | the request carried an `origin`, `sessionKey` or `runId` argument; the origin comes from the ticket only |
+| `no-call-key` | no call key, or one that is not a non-empty string |
+| `multiple-call-keys` | more than one call key |
+| `no-call-ticket` | no ticket for the key (the hook did not run, or a forged key) |
+| `call-ticket-replayed` | the ticket for the key was already claimed |
+| `call-ticket-malformed` | the ticket is not a valid v1 ticket for the key |
+| `call-ticket-expired` | the ticket expired before the request arrived, or was swept as expired while being claimed |
+| `call-ticket-verb-mismatch` | the ticket was issued for another verb |
+| `call-ticket-digest-mismatch` | the arguments differ from the ticketed ones |
+| `call-ticket-dir-unsafe` | the tickets directory is a symlink, not a directory, owned by another user, or open to group or other; names the path and the reason |
+| `call-ticket-claim-failed` | the claim marker (`.used` tombstone) could not be written (e.g. `ENOSPC`, `EACCES`), so the ticket was not claimed; names the path and the errno |
+| `unsafe-agent-id` | the agent id is not a single path segment; names the id |
+| `no-engine-state-dir` | none of the three directory sources resolved; names the agent |
+| `no-agent-token` | the agent's token file is missing, empty or unreadable; names the agent and the expected path |
+
+A 401 or 403 from the product itself is passed through unchanged. There is no
+fallback to `SINGLEINTENT_TOKEN`, `SINGLEINTENT_TOKEN_FILE`, another agent's
+file, or any model-supplied field. Reads, and only reads, keep the
+instance token described above.
+
+**Limitation.** Tickets give attribution, not isolation: a process running as
+the same OS user can write ticket files and read token files alike. A plugin
+whose `before_tool_call` hook changes these tools' arguments after this one
+causes a digest mismatch, which is refused.
+
+**Surviving update and bind.** Nothing a write needs lives in the install root.
+`openclaw plugins update` replaces the root, `instance.json` included, and the
+product's bind rewrites `instance.json` with the port. The agent's token is under
+the engine state dir and is untouched by both, so the next write after the bind
+goes out with the same token to the new port. Tests in
+`src/mcp-server.workitems.test.ts` cover both.
+
 ### Known-unverified behaviour
 
 Two things this plugin's design leans on are characterised but **not proven**,
@@ -123,7 +286,8 @@ tolerate being called with none, or it will act on empty config intermittently.
 
 ## Verbs
 
-Fourteen: seven that read and seven that write. Every one is a single call to the
+Fourteen: seven that read and seven that write, plus the five
+[work-item verbs](#work-item-verbs). Every one is a single call to the
 product's API. This connector validates arguments, makes that call, and shapes the
 response — it holds no state, keeps no cache, and performs no step the product does
 not expose as an endpoint. Where something is missing from the surface, the reason
@@ -372,13 +536,28 @@ already truncated server-side and is not re-truncated here.
 
 ## Write verbs
 
-Seven, and three things are true of all of them before the individual entries.
+Seven, and four things are true of all of them before the individual entries.
 
-**Nothing here can be deleted.** The product exposes no delete route, so this
-connector has none. A project, an agent, a template, a role and a connection are
-each created once and stay. Only `update_template` can be taken back, by calling it
-again with the previous values — which means reading them first if you want to be
-able to.
+**Each goes out as the calling agent (SCRUM-185).** Like the work-item writes,
+every one needs a call ticket from the plugin's hook and is sent with the calling
+agent's own token, never the instance token; an agent with no token file is
+refused locally with `no-agent-token` and nothing is sent. See
+[Work-item write credentials](#work-item-write-credentials).
+
+**Nothing here can be undone from this connector.** It wraps no delete, archive or
+detach route. What the product itself allows differs per verb, and each verb's
+description says which:
+
+| Verb | Undo in the product |
+|---|---|
+| `create_project` | No delete. The project can be archived from the product's UI (`POST /api/ents`, kind `archive`). |
+| `create_agent` | The product's UI can delete the agent (`DELETE /api/agents/:id`) or detach it from the project (`DELETE /api/projects/:id/agents/:agentId`). |
+| `create_template` | None: no route deletes a template. Its text stays editable through `update_template`. |
+| `apply_role` | None: no route clears a role. |
+| `create_connection` | None: no route deletes a connection. |
+
+Only `update_template` can be taken back here, by calling it again with the
+previous values — which means reading them first if you want to be able to.
 
 **Three of them spend a real agent turn.** `apply_role`, `create_connection` and
 `send_message` each wake an agent and wait for it to finish before the product
@@ -419,14 +598,31 @@ Registers an agent and adds it to a project. Returns `agentId`, lifted out of th
 response because it is what every later `agent_id` takes, alongside the product's
 own create result whole.
 
-`name`, `project_id` and `workspace_subpath` are each **permanent**. The workspace
-is derived from the project's working directory at creation and never changed
-afterwards, and an agent's identity is not editable. A wrong one means creating
-another agent.
+`name` is **permanent**: an agent's identity is not editable, so a wrong one means
+creating another agent. `project_id` makes the agent a member of that project; no
+verb here changes membership afterwards.
 
-`workspace_subpath` is relative and must stay inside the project's directory. An
-absolute path is refused here; an escaping relative path is refused by the product,
-which is the only side that knows what it would escape from.
+The product gives each new agent its own workspace under the active OpenClaw
+profile, **separate from the project's working directory**. Project membership is
+what grants access; where the workspace sits neither grants nor restricts it. A
+separate workspace is **not a sandbox**: the agent's tools run as the same OS user
+and can reach the project directory and anything else that user can.
+
+**A create can come back partial (SCRUM-190).** The product polls OpenClaw's
+roster for up to 5 s after creating an agent. If the roster never shows it, the
+product still answers 200, with the agent created and given project access, but
+marked roster-unverified. `create_agent` then returns `partial: true`,
+`rosterUnverified: true`, the product's `nextAction` and a `warning`: do not create
+the agent again; re-read it. If instead OpenClaw created the agent but the roster
+reports a different or missing workspace, the product attaches it to no project and
+answers 502. `create_agent` fails, but names the created agent (`createdAgentId`)
+and the product's `nextAction` (delete it, from the product's UI) in the error's
+structured content. Either way, calling `create_agent` again is the wrong next
+step. The verb allows 30 s for the whole create, not the 10 s default.
+
+There is no `workspace_subpath`. The product no longer applies one (it only
+reports it back as `applied: false`), so the argument is not offered and the verb
+never sends it.
 
 > **`template_id` and `content` are deliberately not arguments.** The product's
 > `POST /api/agents` serves a second flow when those two are sent together: it
@@ -560,6 +756,56 @@ is wanted, it starts as a product endpoint.
 There is no delete verb of any kind, and no way to edit an agent after creating it,
 for the same reason: no route.
 
+## Work-item verbs
+
+Five, all scoped to exactly one project by a required `projectId` UUID, and all
+camelCase on the wire. Reads use the instance token; the three writes go out as
+the calling agent (see [Work-item write credentials](#work-item-write-credentials)).
+Every write takes an optional UUIDv7 `eventId`: reuse it to retry safely, since
+the server deduplicates on it (200 with `deduplicated: true`). The server assigns
+actor and time; no verb takes either.
+
+| Verb | Route | Writes |
+| --- | --- | --- |
+| `list_workitems` | `GET /api/workitems?project=<id>` | no |
+| `get_workitem` | `GET /api/workitems/:itemId?project=<id>` | no |
+| `create_workitem` | `POST /api/workitems?project=<id>` | yes |
+| `workitem_set_state` | `POST /api/workitems/:itemId/state?project=<id>` | yes |
+| `workitem_estimate` | `POST /api/workitems/:itemId/estimate?project=<id>` | yes |
+| `workitem_note` | `POST /api/workitems/:itemId/note?project=<id>` | yes |
+
+- `create_workitem` takes `title`, `intent` and an optional `estimate` (`XS`, `S`,
+  `M`, `L` or `XL`), recorded as the item's original estimate. It also takes the
+  optional tracking fields `kind` (`task` or `focus`), `assignee` (agent id of a
+  project member), `focus` (UUIDv7 of a focus item) and `test` (boolean). Each is
+  sent only when given; the server checks assignee membership and the focus item.
+- `workitem_set_state` is the only verb that changes state. Targets: `started`,
+  `blocked`, `completed`, `failed`, `canceled`, plus `dispatched` and
+  `acknowledged`. `reason` is required for blocked, failed and canceled, and
+  `outcome` for completed. `dispatched` and `acknowledged` each append a ledger
+  event and leave the item `open`; they take only an optional `reason`. The
+  server refuses outcome or evidence on them (400 `invalid-body`), `acknowledged`
+  without an earlier `dispatched` (409), and either on a started or terminal item
+  (409). There is no separate acknowledge route. An optional `waitingOn` (1–200
+  characters) names who or what a blocked item waits on; it is sent only when
+  given, and the server refuses it on any other state (400 `waiting-on-not-allowed`)
+  or when malformed (400 `invalid-waiting-on`).
+- `workitem_estimate` re-estimates with a required `size` (`XS` to `XL`). The body
+  is exactly `{eventId, size}`, plus `origin` when the call ticket has a session
+  key (see Origin above). Each call adds an estimate and keeps the earlier
+  ones; a completed, failed or canceled item returns 409.
+- `workitem_note` appends a `noted` event with a required `text` (1–2000
+  characters after trimming; the server stores it trimmed). The body is exactly
+  `{eventId, text}`, plus `origin` when the call ticket has a session key, as
+  for the other writes; the product records it on the `noted` event but never
+  links a session from a note. The item's state does not move; a
+  completed, failed or canceled item returns 409 `invalid-transition`, and an
+  eventId reused with different text returns 409 `event-conflict`.
+
+Sizes and transitions are the server's to check. Its status, `code` and message
+come back unchanged in the tool error (for example 400 `invalid-estimate`, 409
+`invalid-transition`), never remapped to a plugin message.
+
 ## Errors, and the distinction worth keeping
 
 | Situation | Type | Site link | What it means |
@@ -685,6 +931,24 @@ servers merge into the `bundle-mcp` namespace, which the default `coding` and
 scoped under the plugin id and would require a hand-edited allowlist that an
 install cannot write for itself.
 
+### Observe-only action-policy hooks (0.1.4)
+
+The plugin also registers `before_tool_call` and `after_tool_call` hooks for the
+dynamic `sessions_send` and `sessions_spawn` aliases. These hooks record policy
+decisions and execution observations; they never block, approve, or rewrite a
+tool call. They do not cover native Codex, CLI/RPC, or direct HTTP actions.
+
+Set the same `SINGLEINTENT_ACTION_ADAPTER_TOKEN` in the Gateway process and the
+SingleIntent server process. It must be at least 32 characters. The Gateway
+defaults to `http://127.0.0.1:5173`; set `SINGLEINTENT_ACTION_POLICY_URL` only
+if the server is on another loopback port. Optionally set
+`SINGLEINTENT_ACTION_POLICY_PROJECT_ID` to pin the host-selected project. Never
+put the token in agent instructions or tool arguments. A missing configuration
+records a local indeterminate observation and does not prevent the action.
+
+Restart the Gateway after installing or updating the plugin; replacing files
+does not activate the hooks in an already running process.
+
 ### Sandboxed gateways
 
 Sandboxing applies a second allow gate that the above does not satisfy. Add
@@ -741,7 +1005,7 @@ printf '%s\n%s\n%s\n' \
 Expected, from the plugin's install path:
 
 ```json
-{"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.3"}},"jsonrpc":"2.0","id":1}
+{"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.4"}},"jsonrpc":"2.0","id":1}
 {"result":{"tools":[{"name":"list_projects", ...},{"name":"get_project", ...},{"name":"list_agents", ...},{"name":"list_templates", ...},{"name":"list_connections", ...},{"name":"get_backlog", ...},{"name":"get_activity", ...},{"name":"create_project", ...},{"name":"create_agent", ...},{"name":"create_template", ...},{"name":"update_template", ...},{"name":"apply_role", ...},{"name":"create_connection", ...},{"name":"send_message", ...}]},"jsonrpc":"2.0","id":2}
 ```
 

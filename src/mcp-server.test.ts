@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { type Config, loadConfig } from "./config.js";
 import { ENV_PREFIX, INSTANCE_FILE_NAME, envVar } from "./names.js";
 import { SERVER_NAME, TOOLS, createServer } from "./mcp-server.js";
-import { NOT_REVERSIBLE } from "./verbs/write-args.js";
+import { REVERSIBILITY } from "./verbs/write-args.js";
 
 const readJson = (relative: string): Record<string, unknown> =>
   JSON.parse(
@@ -47,9 +47,51 @@ describe("work-item MCP tool contract", () => {
   it("accepts only server MVP state targets and never exposes actor or timestamp inputs", () => {
     const schema = tool("workitem_set_state").inputSchema as { additionalProperties: boolean; properties: Record<string, { enum?: string[] }> };
     expect(schema.additionalProperties).toBe(false);
-    expect(Object.keys(schema.properties)).toEqual(["projectId", "itemId", "state", "reason", "outcome", "evidence", "eventId"]);
-    expect(schema.properties.state?.enum).toEqual(["started", "blocked", "completed", "failed", "canceled"]);
+    expect(Object.keys(schema.properties)).toEqual(["projectId", "itemId", "state", "reason", "outcome", "evidence", "waitingOn", "eventId"]);
+    expect(schema.properties.state?.enum).toEqual(["dispatched", "acknowledged", "started", "blocked", "completed", "failed", "canceled"]);
     for (const key of ["actor", "agentId", "timestamp", "at"]) expect(schema.properties).not.toHaveProperty(key);
+  });
+
+  it("offers workitem_set_state an optional waitingOn string of 1-200 chars (SCRUM-154)", () => {
+    expect(properties("workitem_set_state").waitingOn).toMatchObject({ type: "string", minLength: 1, maxLength: 200 });
+    expect((tool("workitem_set_state").inputSchema as { required: string[] }).required).not.toContain("waitingOn");
+    expect(tool("workitem_set_state").description).toMatch(/waitingOn .*only valid with blocked/);
+  });
+
+  it("offers create_workitem an optional t-shirt estimate", () => {
+    expect(properties("create_workitem").estimate?.enum).toEqual(["XS", "S", "M", "L", "XL"]);
+    expect((tool("create_workitem").inputSchema as { required: string[] }).required).not.toContain("estimate");
+  });
+
+  it("offers create_workitem optional kind, assignee, focus and test tracking fields (SCRUM-147)", () => {
+    const props = properties("create_workitem");
+    expect(props.kind).toMatchObject({ type: "string", enum: ["task", "focus"] });
+    expect(props.assignee?.type).toBe("string");
+    expect(props.focus?.type).toBe("string");
+    expect(props.test?.type).toBe("boolean");
+    const required = (tool("create_workitem").inputSchema as { required: string[] }).required;
+    for (const key of ["kind", "assignee", "focus", "test"]) expect(required).not.toContain(key);
+  });
+
+  it("offers workitem_estimate with a required t-shirt size and no state input", () => {
+    const schema = tool("workitem_estimate").inputSchema as { additionalProperties: boolean; required: string[] };
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.required).toEqual(["projectId", "itemId", "size"]);
+    expect(Object.keys(properties("workitem_estimate"))).toEqual(["projectId", "itemId", "size", "eventId"]);
+    expect(properties("workitem_estimate").size?.enum).toEqual(["XS", "S", "M", "L", "XL"]);
+    expect(tool("workitem_estimate").description).toMatch(/reuse the same UUIDv7 eventId/);
+  });
+
+  it("offers workitem_note with required text of 1-2000 chars and no state, actor or origin input (SCRUM-170)", () => {
+    const schema = tool("workitem_note").inputSchema as { additionalProperties: boolean; required: string[] };
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.required).toEqual(["projectId", "itemId", "text"]);
+    expect(Object.keys(properties("workitem_note"))).toEqual(["projectId", "itemId", "text", "eventId"]);
+    expect(properties("workitem_note").text).toMatchObject({ type: "string", minLength: 1, maxLength: 2000 });
+    const description = tool("workitem_note").description ?? "";
+    expect(description).toMatch(/does not change the item's state/);
+    expect(description).toMatch(/completed, failed or canceled item cannot be noted/);
+    expect(description).toMatch(/reuse the same UUIDv7 eventId/);
   });
 
   it("documents the stable event id needed to retry writes safely", () => {
@@ -149,7 +191,7 @@ describe("the write verbs", () => {
 
   it("advertises all existing writes alongside the work-item tools", () => {
     for (const name of WRITE_VERBS) expect(TOOLS.map((t) => t.name)).toContain(name);
-    expect(TOOLS).toHaveLength(18);
+    expect(TOOLS).toHaveLength(20);
   });
 
   it("each declare their required arguments, so a model cannot omit one", () => {
@@ -173,20 +215,51 @@ describe("the write verbs", () => {
   });
 
   /**
-   * Six of the seven cannot be undone, and each says so in the same words. The
-   * exception is `update_template`, which can be called again with the previous
-   * values — and it says *that*, so the absence is a statement rather than a gap.
+   * SCRUM-191: each irreversible verb states its own reversibility truthfully and
+   * names the product's undo route where one exists. The exception is
+   * `update_template`, which can be called again with the previous values — and
+   * it says *that*, so the absence is a statement rather than a gap.
    */
-  it.each(["create_project", "create_agent", "create_template", "apply_role", "create_connection"])(
-    "%s says it cannot be undone, and why",
-    (name) => {
-      expect(tool(name).description).toContain(NOT_REVERSIBLE);
-    },
-  );
+  it("create_project says it can only be archived, and names the archive route", () => {
+    const description = tool("create_project").description ?? "";
+    expect(description).toContain(REVERSIBILITY.create_project);
+    expect(description).toMatch(/no route to delete a project/);
+    expect(description).toMatch(/archived/);
+    expect(description).toContain("POST /api/ents");
+  });
+
+  it("create_agent names the product's delete and detach routes", () => {
+    const description = tool("create_agent").description ?? "";
+    expect(description).toContain(REVERSIBILITY.create_agent);
+    expect(description).toContain("DELETE /api/agents/:id");
+    expect(description).toContain("DELETE /api/projects/:id/agents/:agentId");
+    expect(description).not.toMatch(/no delete route/);
+  });
+
+  it("create_template says no route deletes a template, and that its text stays editable", () => {
+    const description = tool("create_template").description ?? "";
+    expect(description).toContain(REVERSIBILITY.create_template);
+    expect(description).toMatch(/no route to delete a template/);
+    expect(description).toMatch(/update_template/);
+  });
+
+  it("apply_role says no route clears a role", () => {
+    const description = tool("apply_role").description ?? "";
+    expect(description).toContain(REVERSIBILITY.apply_role);
+    expect(description).toMatch(/no route to clear a role/);
+  });
+
+  it("create_connection says no route deletes a connection", () => {
+    const description = tool("create_connection").description ?? "";
+    expect(description).toContain(REVERSIBILITY.create_connection);
+    expect(description).toMatch(/no route to delete a connection/);
+  });
 
   it("update_template says it is reversible rather than staying silent", () => {
     const description = tool("update_template").description ?? "";
-    expect(description).not.toContain(NOT_REVERSIBLE);
+    for (const sentence of Object.values(REVERSIBILITY)) {
+      expect(description).not.toContain(sentence);
+    }
     expect(description).toMatch(/can be undone/);
   });
 
@@ -224,7 +297,7 @@ describe("the write verbs", () => {
     // this schema; the description has to say what to use instead.
     const create = tool("create_agent");
     const properties = (create.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
-    expect(Object.keys(properties)).toEqual(["name", "project_id", "workspace_subpath", "model"]);
+    expect(Object.keys(properties)).toEqual(["name", "project_id", "model"]);
     expect(create.description).toMatch(/apply_role/);
   });
 
@@ -237,6 +310,23 @@ describe("the write verbs", () => {
       expect(Object.keys(properties)).not.toContain(field);
     },
   );
+
+  it("create_agent says its workspace is separate from the project and not a sandbox", () => {
+    // SCRUM-130: membership grants access; the workspace sits under the OpenClaw profile.
+    const description = tool("create_agent").description ?? "";
+    expect(description).toMatch(/separate from the project's working directory/);
+    expect(description).toMatch(/membership is what grants access/);
+    expect(description).toMatch(/not a sandbox/);
+    expect(description).not.toMatch(/derived from the project/);
+  });
+
+  it("create_agent's schema does not offer workspace_subpath, which the product never applies", () => {
+    // SCRUM-188: the product reports a subpath back as `applied: false`.
+    const properties = (tool("create_agent").inputSchema as {
+      properties?: Record<string, unknown>;
+    }).properties ?? {};
+    expect(Object.keys(properties)).not.toContain("workspace_subpath");
+  });
 });
 
 describe("the published surface carries no product internals", () => {
