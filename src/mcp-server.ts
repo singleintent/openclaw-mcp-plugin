@@ -22,7 +22,7 @@ import type { RequestOptions } from "./client.js";
 import { loadConfig, type Config } from "./config.js";
 import { SERVER_NAME, SERVER_VERSION } from "./names.js";
 import { applyRole } from "./verbs/apply-role.js";
-import { createAgent } from "./verbs/create-agent.js";
+import { createAgent, CreateAgentPartialError } from "./verbs/create-agent.js";
 import { createConnection } from "./verbs/create-connection.js";
 import { createProject } from "./verbs/create-project.js";
 import { createTemplate } from "./verbs/create-template.js";
@@ -38,12 +38,26 @@ import { sendMessage } from "./verbs/send-message.js";
 import { updateTemplate } from "./verbs/update-template.js";
 import {
   createWorkitem,
+  ESTIMATE_SIZES,
   getWorkitem,
   listWorkitems,
+  workitemEstimate,
+  workitemNote,
   workitemSetState,
   WORKITEM_STATES,
 } from "./verbs/workitems.js";
-import { NOT_REVERSIBLE } from "./verbs/write-args.js";
+import { REVERSIBILITY } from "./verbs/write-args.js";
+import { claimTicket, defaultTicketsDir } from "./call-ticket.js";
+import {
+  actingKeys,
+  originKeys,
+  readWorkitemToken,
+  ticketOrigin,
+  type WriteOrigin,
+  ORIGIN_WRITE_TOOLS,
+  TICKETED_WRITE_TOOLS,
+  WorkitemCredentialError,
+} from "./workitem-token.js";
 
 export { SERVER_NAME, SERVER_VERSION };
 
@@ -223,7 +237,8 @@ export const TOOLS: Tool[] = [
       "ID, open state, actor, and timestamp. eventId is optional; when retrying an " +
       "uncertain request, supply and reuse the same UUIDv7 eventId for safe " +
       "idempotency. If omitted, a UUIDv7 is generated for this call; an omitted " +
-      "key cannot be reused after a lost response.",
+      "key cannot be reused after a lost response. Optional kind, assignee, focus " +
+      "and test set the item's tracking fields; the server checks assignee membership and the focus item.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -232,6 +247,22 @@ export const TOOLS: Tool[] = [
         projectId: { type: "string", description: "UUID of the project that owns this work record." },
         title: { type: "string", minLength: 1, maxLength: 200 },
         intent: { type: "string", minLength: 1, maxLength: 10000 },
+        estimate: {
+          type: "string",
+          enum: [...ESTIMATE_SIZES],
+          description: "Optional t-shirt size recorded as the item's original estimate.",
+        },
+        kind: {
+          type: "string",
+          enum: ["task", "focus"],
+          description: "Optional item kind; the server default is task.",
+        },
+        assignee: { type: "string", description: "Optional agent id of the project member who owns the item." },
+        focus: {
+          type: "string",
+          description: "Optional UUIDv7 of the focus item this item serves; not allowed when kind is focus.",
+        },
+        test: { type: "boolean", description: "Optional marker for test items; omit for real work." },
         eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
       },
     },
@@ -243,6 +274,10 @@ export const TOOLS: Tool[] = [
       "server-validated MVP transition; open is initial-only. The server supplies " +
       "the authenticated actor and timestamp—do not provide either. Reason is " +
       "required for blocked, failed, or canceled; outcome is required for completed. " +
+      "dispatched and acknowledged record a hand-off and pickup on an open item, which " +
+      "stays open; they take an optional reason and no outcome or evidence, and " +
+      "acknowledged needs an earlier dispatched. " +
+      "Optional waitingOn names who or what a blocked item waits on; it is only valid with blocked. " +
       "For safe retries, supply and reuse the same UUIDv7 eventId; if omitted, a " +
       "UUIDv7 is generated for this call and cannot be reused after a lost response.",
     inputSchema: {
@@ -256,6 +291,53 @@ export const TOOLS: Tool[] = [
         reason: { type: "string", maxLength: 2000 },
         outcome: { type: "string", maxLength: 5000 },
         evidence: { type: "string", maxLength: 5000 },
+        waitingOn: {
+          type: "string",
+          minLength: 1,
+          maxLength: 200,
+          description: "Optional who or what a blocked item waits on; only valid with state blocked.",
+        },
+        eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
+      },
+    },
+  },
+  {
+    name: "workitem_estimate",
+    description:
+      "Re-estimate a work record with a t-shirt size. Appends a new estimate to the " +
+      "item's history; the original estimate is kept, and the item's state does not " +
+      "move. A completed, failed or canceled item cannot be re-estimated. For safe " +
+      "retries, supply and reuse the same UUIDv7 eventId; if omitted, a UUIDv7 is " +
+      "generated for this call and cannot be reused after a lost response.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["projectId", "itemId", "size"],
+      properties: {
+        projectId: { type: "string", description: "UUID of the project's work-item store." },
+        itemId: { type: "string", description: "UUID of the item in that project." },
+        size: { type: "string", enum: [...ESTIMATE_SIZES] },
+        eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
+      },
+    },
+  },
+  {
+    name: "workitem_note",
+    description:
+      "Append a note to a work record: a correction or remark kept in the item's " +
+      "history, with the authenticated actor and timestamp the server supplies. " +
+      "It does not change the item's state. A completed, failed or canceled item " +
+      "cannot be noted. Text is 1-2000 characters after trimming. For safe " +
+      "retries, supply and reuse the same UUIDv7 eventId; if omitted, a UUIDv7 is " +
+      "generated for this call and cannot be reused after a lost response.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["projectId", "itemId", "text"],
+      properties: {
+        projectId: { type: "string", description: "UUID of the project's work-item store." },
+        itemId: { type: "string", description: "UUID of the item in that project." },
+        text: { type: "string", minLength: 1, maxLength: 2000, description: "The note; stored trimmed." },
         eventId: { type: "string", description: "Optional stable UUIDv7 idempotency key; reuse it on retries." },
       },
     },
@@ -265,8 +347,8 @@ export const TOOLS: Tool[] = [
   // validation behind them are the whole of what this layer adds.
   //
   // Three things recur in them on purpose. Irreversibility is stated wherever it
-  // holds, in one shared sentence, because the product has no delete route and a
-  // caller cannot discover that by trying. The verbs that spend a real agent turn
+  // holds, one sentence per verb (REVERSIBILITY), naming the product's undo route
+  // where one exists, because a caller cannot discover that by trying. The verbs that spend a real agent turn
   // say so, because that cost is invisible from a schema. And where a call can only
   // ever succeed once, the description says so rather than leaving a caller to
   // learn it from a 409 it has already spent a turn to reach.
@@ -278,7 +360,7 @@ export const TOOLS: Tool[] = [
       "other verb's project_id refers to. Starts with no member agents. The " +
       "working directory is recorded exactly as given — not created, not checked " +
       "and not resolved — so a wrong path is stored and surfaces later as agents " +
-      `pointed somewhere wrong. ${NOT_REVERSIBLE}`,
+      `pointed somewhere wrong. ${REVERSIBILITY.create_project}`,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -298,11 +380,13 @@ export const TOOLS: Tool[] = [
     name: "create_agent",
     description:
       "Register an agent and add it to a SingleIntent project. Returns the new " +
-      "agentId, which is what every other verb's agent_id takes. The workspace is " +
-      "derived from the project's working directory and is fixed permanently at " +
-      "creation, as is the name — neither is editable afterwards, so a wrong one " +
-      "means creating another agent. The new agent has no role; use apply_role to " +
-      `give it one. ${NOT_REVERSIBLE}`,
+      "agentId, which is what every other verb's agent_id takes. The product gives " +
+      "the agent its own workspace under the active OpenClaw profile, separate from " +
+      "the project's working directory: project membership is what grants access, " +
+      "not where the workspace is. A separate workspace is not a sandbox; the agent " +
+      "runs as the same OS user. The name is permanent, so a wrong one means " +
+      "creating another agent. The new agent has no role; use apply_role to give " +
+      `it one. ${REVERSIBILITY.create_agent}`,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -313,13 +397,8 @@ export const TOOLS: Tool[] = [
           type: "string",
           description:
             "UUID of the project to create it in, as returned by list_projects. " +
-            "The agent is added to that project and its workspace comes from it.",
-        },
-        workspace_subpath: {
-          type: "string",
-          description:
-            "Optional path relative to the project's working directory; must stay " +
-            "inside it. Defaults to the working directory itself. Permanent.",
+            "The agent is added to that project as a member; its workspace is not " +
+            "placed in the project's directory.",
         },
         model: {
           type: "string",
@@ -335,7 +414,7 @@ export const TOOLS: Tool[] = [
       "later told to adopt as its own identity, used verbatim and never rewritten, " +
       "so it should read as instructions to that agent. Returns the created " +
       "template including the id apply_role takes. Its text stays editable through " +
-      `update_template, but the template itself cannot be removed. ${NOT_REVERSIBLE}`,
+      `update_template. ${REVERSIBILITY.create_template}`,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -385,7 +464,7 @@ export const TOOLS: Tool[] = [
       "record blocks this whatever state it is in, and none can be cleared, so a " +
       "second call always fails and retrying never helps. Check the template is " +
       "the right one before calling. The role is a copy taken now — editing the " +
-      `template afterwards will not reach this agent. ${NOT_REVERSIBLE}`,
+      `template afterwards will not reach this agent. ${REVERSIBILITY.apply_role}`,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -412,7 +491,7 @@ export const TOOLS: Tool[] = [
       "seconds. A connection is mutual awareness for later reference, not a task: " +
       "the product explicitly tells the two agents not to start or discuss work in " +
       "that exchange. Fails if this exact direction already exists; the reverse " +
-      `direction is a different connection and never conflicts. ${NOT_REVERSIBLE}`,
+      `direction is a different connection and never conflicts. ${REVERSIBILITY.create_connection}`,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -468,7 +547,15 @@ export const TOOLS: Tool[] = [
  * the same try that wraps every handler, so a malformed or invalid file comes
  * back as a tool error naming the file rather than killing the transport.
  */
-export function createServer(resolveConfig: () => Config): Server {
+export type ServerOptions = {
+  /** Where call tickets live; the plugin root's `.call-tickets` by default. */
+  ticketsDir?: () => string;
+  now?: () => number;
+};
+
+export function createServer(resolveConfig: () => Config, options: ServerOptions = {}): Server {
+  const ticketsDir = options.ticketsDir ?? defaultTicketsDir;
+  const now = options.now ?? Date.now;
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} } },
@@ -485,6 +572,7 @@ export function createServer(resolveConfig: () => Config): Server {
    */
   const buildHandlers = (
     config: Config,
+    origin?: WriteOrigin,
   ): Record<
     string,
     (args: Record<string, unknown>, options: RequestOptions) => Promise<unknown>
@@ -504,7 +592,13 @@ export function createServer(resolveConfig: () => Config): Server {
           projectId: args.projectId,
           title: args.title,
           intent: args.intent,
+          estimate: args.estimate,
+          kind: args.kind,
+          assignee: args.assignee,
+          focus: args.focus,
+          test: args.test,
           eventId: args.eventId,
+          origin,
         },
         options,
       ),
@@ -518,7 +612,33 @@ export function createServer(resolveConfig: () => Config): Server {
           reason: args.reason,
           outcome: args.outcome,
           evidence: args.evidence,
+          waitingOn: args.waitingOn,
           eventId: args.eventId,
+          origin,
+        },
+        options,
+      ),
+    workitem_estimate: (args, options) =>
+      workitemEstimate(
+        config,
+        {
+          projectId: args.projectId,
+          itemId: args.itemId,
+          size: args.size,
+          eventId: args.eventId,
+          origin,
+        },
+        options,
+      ),
+    workitem_note: (args, options) =>
+      workitemNote(
+        config,
+        {
+          projectId: args.projectId,
+          itemId: args.itemId,
+          text: args.text,
+          eventId: args.eventId,
+          origin,
         },
         options,
       ),
@@ -591,7 +711,6 @@ export function createServer(resolveConfig: () => Config): Server {
         {
           name: args.name,
           projectId: args.project_id,
-          workspaceSubpath: args.workspace_subpath,
           model: args.model,
         },
         options,
@@ -613,9 +732,53 @@ export function createServer(resolveConfig: () => Config): Server {
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    let args = (request.params.arguments ?? {}) as Record<string, unknown>;
     try {
-      const handler = buildHandlers(resolveConfig())[request.params.name];
+      let config = resolveConfig();
+      let origin: WriteOrigin | undefined;
+      // A ticketed write goes out as the calling agent and only as that agent:
+      // the instance token is replaced, not merely preferred against, so a
+      // missing per-agent token can never degrade into a write under another
+      // identity. The agent comes from the call ticket the hook wrote, never
+      // from the request. See src/call-ticket.ts. Reads keep the instance token.
+      if (TICKETED_WRITE_TOOLS.has(request.params.name)) {
+        const acting = actingKeys(args);
+        if (acting.length > 0) {
+          throw new WorkitemCredentialError(
+            "acting-args-refused",
+            `the request carries ${acting.join(", ")}. Writes take their ` +
+              "identity from the plugin's call ticket only; acting arguments are refused.",
+            undefined,
+            undefined,
+          );
+        }
+        const modelOrigin = originKeys(args);
+        if (modelOrigin.length > 0) {
+          throw new WorkitemCredentialError(
+            "origin-args-refused",
+            `the request carries ${modelOrigin.join(", ")}. A write's origin ` +
+              "comes from the plugin's call ticket only; origin arguments are refused.",
+            undefined,
+            undefined,
+          );
+        }
+        const claimed = claimTicket(
+          ticketsDir(),
+          request.params.name,
+          request.params._meta as Record<string, unknown> | undefined,
+          args,
+          now(),
+        );
+        const { token } = readWorkitemToken(claimed.ticket.agentId, claimed.ticket.engineStateDir);
+        config = { ...config, token, sources: { ...config.sources, token: "workitem-token" } };
+        args = claimed.args;
+        // The origin (SCRUM-148) is the session and run the hook recorded in the
+        // ticket, handed to the handlers out of band, never read from arguments.
+        // Only the work-item routes take one; the product has no origin contract
+        // for the other ticketed writes, so they send none.
+        if (ORIGIN_WRITE_TOOLS.has(request.params.name)) origin = ticketOrigin(claimed.ticket);
+      }
+      const handler = buildHandlers(config, origin)[request.params.name];
       if (handler === undefined) {
         throw new Error(`unknown tool: ${request.params.name}`);
       }
@@ -631,6 +794,35 @@ export function createServer(resolveConfig: () => Config): Server {
         content: [
           { type: "text", text: error instanceof Error ? error.message : String(error) },
         ],
+        // A local refusal carries a plugin-owned code and no HTTP status: no
+        // request was made. The product's own 401/403 pass through unchanged.
+        ...(error instanceof WorkitemCredentialError
+          ? {
+              structuredContent: {
+                error: {
+                  code: error.code,
+                  agentId: error.agentId ?? null,
+                  path: error.path ?? null,
+                  message: error.message,
+                },
+              },
+            }
+          : {}),
+        // SCRUM-190: a failed create that still created an agent names it and
+        // the product's next action, so a caller does not create it twice.
+        ...(error instanceof CreateAgentPartialError
+          ? {
+              structuredContent: {
+                error: {
+                  code: error.code ?? null,
+                  status: error.status,
+                  createdAgentId: error.createdAgentId,
+                  nextAction: error.nextAction,
+                  message: error.message,
+                },
+              },
+            }
+          : {}),
       };
     }
   });
@@ -638,10 +830,51 @@ export function createServer(resolveConfig: () => Config): Server {
   return server;
 }
 
+/**
+ * Upper bound between a shutdown trigger and process exit.
+ *
+ * OpenClaw closes a stdio MCP server by ending its stdin, then sends SIGTERM
+ * after 2s and SIGKILL after another 2s, inside a 5s dispose window
+ * (`closeOwnedStdioProcess` / `disposeMcpClient` in 2026.9.8). Exiting well
+ * inside the first 2s means the polite close is the one that succeeds.
+ */
+export const SHUTDOWN_GRACE_MS = 500;
+
 export async function main(): Promise<void> {
   // `loadConfig` itself is the resolver: it reads process.env on each call, so a
   // config written after this process started is still seen.
   const server = createServer(() => loadConfig());
+
+  // The SDK's stdio transport never watches for stdin EOF, so a closed pipe does
+  // not close the server. Node then exits only once the event loop drains, and an
+  // in-flight product request holds it open until its own timeout (10s by
+  // default). Shut down explicitly on every way the client can go away.
+  let shuttingDown = false;
+  const shutdown = (reason: string, exitCode: number): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    process.exitCode = exitCode;
+    // Bounded: whatever handle outlives the close, the process still exits.
+    // Unref'd so it never extends a process that would otherwise exit sooner.
+    // A routine close stays silent, because OpenClaw logs every stderr line;
+    // only a forced exit is worth a diagnostic, and stdout carries the framing.
+    setTimeout(() => {
+      console.error(
+        `${SERVER_NAME} mcp server forced exit ${SHUTDOWN_GRACE_MS}ms after ${reason}: handles still open`,
+      );
+      process.exit();
+    }, SHUTDOWN_GRACE_MS).unref();
+    // Closing the server aborts in-flight tool handlers, whose signal reaches
+    // the product fetch, so the event loop normally drains well before the bound.
+    server.close().catch(() => undefined);
+  };
+
+  server.onclose = () => shutdown("transport closed", 0);
+  process.stdin.once("end", () => shutdown("stdin ended", 0));
+  process.stdin.once("close", () => shutdown("stdin closed", 0));
+  process.once("SIGTERM", () => shutdown("SIGTERM", 143));
+  process.once("SIGINT", () => shutdown("SIGINT", 130));
+
   await server.connect(new StdioServerTransport());
 }
 

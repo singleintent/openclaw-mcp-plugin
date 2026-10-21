@@ -6,12 +6,17 @@ import {
   type RequestOptions,
 } from "../client.js";
 import type { Config } from "../config.js";
+import type { WriteOrigin } from "../workitem-token.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UUID7_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const WORKITEM_STATES = [
+  // SCRUM-150 dispatch events: each appends a ledger event and the item stays
+  // open. Outcome, evidence and assignee are the server's to refuse (400).
+  "dispatched",
+  "acknowledged",
   "started",
   "blocked",
   "completed",
@@ -19,6 +24,8 @@ export const WORKITEM_STATES = [
   "canceled",
 ] as const;
 export type WorkitemState = (typeof WORKITEM_STATES)[number];
+/** T-shirt sizes the server accepts for `estimate` and `size` (SCRUM-150). */
+export const ESTIMATE_SIZES = ["XS", "S", "M", "L", "XL"] as const;
 
 export type WorkitemProjection = {
   id: string;
@@ -204,7 +211,13 @@ export async function createWorkitem(
     projectId: unknown;
     title: unknown;
     intent: unknown;
+    estimate?: unknown;
+    kind?: unknown;
+    assignee?: unknown;
+    focus?: unknown;
+    test?: unknown;
     eventId?: unknown;
+    origin?: WriteOrigin;
   },
   options: RequestOptions = {},
 ): Promise<WorkitemWriteResult> {
@@ -226,11 +239,20 @@ export async function createWorkitem(
       "intent must be non-empty text no longer than 10000 characters",
     );
   const eventId = requireEventId(args.eventId);
+  // The size and tracking fields are the server's to check: a bad one comes
+  // back as its own 400 (invalid-estimate, invalid-assignee, ...) rather than a
+  // plugin message saying the same thing. Absent ones stay out of the body, so
+  // an omitted test never becomes false.
+  const body: Record<string, unknown> = { eventId, title: args.title, intent: args.intent };
+  for (const key of ["estimate", "kind", "assignee", "focus", "test"] as const) {
+    if (args[key] !== undefined && args[key] !== null) body[key] = args[key];
+  }
+  withOrigin(body, args.origin);
   const response = await sendJson<unknown>(
     config,
     "POST",
     "/api/workitems" + projectQuery(projectId),
-    { eventId, title: args.title, intent: args.intent },
+    body,
     options,
   );
   return assertWriteResult(response, projectId);
@@ -244,7 +266,9 @@ export async function workitemSetState(
     reason?: unknown;
     outcome?: unknown;
     evidence?: unknown;
+    waitingOn?: unknown;
     eventId?: unknown;
+    origin?: WriteOrigin;
   },
   options: RequestOptions = {},
 ): Promise<WorkitemWriteResult> {
@@ -284,12 +308,109 @@ export async function workitemSetState(
   const body: Record<string, unknown> = { eventId, state: args.state };
   for (const key of ["reason", "outcome", "evidence"] as const)
     if (args[key] !== undefined) body[key] = args[key];
+  // waitingOn is the server's to check (SCRUM-154): blocked-only and its
+  // bounds come back as its own 400 waiting-on-not-allowed / invalid-waiting-on.
+  if (args.waitingOn !== undefined && args.waitingOn !== null)
+    body.waitingOn = args.waitingOn;
+  withOrigin(body, args.origin);
   const response = await sendJson<unknown>(
     config,
     "POST",
     "/api/workitems/" +
       encodeURIComponent(itemId) +
       "/state" +
+      projectQuery(projectId),
+    body,
+    options,
+  );
+  return assertWriteResult(response, projectId);
+}
+/**
+ * Record a re-estimate (SCRUM-150): a new `estimated` ledger event, never an
+ * edit of the original. The body is exactly `{eventId, size}`, plus `origin`
+ * when the call ticket carried one (SCRUM-148); the server checks the size and
+ * refuses a terminal item with 409.
+ */
+export async function workitemEstimate(
+  config: Config,
+  args: {
+    projectId: unknown;
+    itemId: unknown;
+    size: unknown;
+    eventId?: unknown;
+    origin?: WriteOrigin;
+  },
+  options: RequestOptions = {},
+): Promise<WorkitemWriteResult> {
+  const projectId = requireUuid(args.projectId, "projectId");
+  const itemId = requireUuid(args.itemId, "itemId");
+  if (args.size === undefined) throw new Error("size is required");
+  const eventId = requireEventId(args.eventId);
+  const body: Record<string, unknown> = { eventId, size: args.size };
+  withOrigin(body, args.origin);
+  const response = await sendJson<unknown>(
+    config,
+    "POST",
+    "/api/workitems/" +
+      encodeURIComponent(itemId) +
+      "/estimate" +
+      projectQuery(projectId),
+    body,
+    options,
+  );
+  return assertWriteResult(response, projectId);
+}
+/**
+ * Add the write origin (SCRUM-148) when there is one. Absent means absent: no
+ * empty object and no null, so a write from outside a session keeps the body it
+ * had before origins existed. The server checks the session belongs to the
+ * token's agent.
+ */
+function withOrigin(body: Record<string, unknown>, origin: WriteOrigin | undefined): void {
+  if (origin === undefined) return;
+  body.origin =
+    origin.runId === undefined
+      ? { sessionKey: origin.sessionKey }
+      : { sessionKey: origin.sessionKey, runId: origin.runId };
+}
+/**
+ * Append a note (SCRUM-170): a `noted` ledger event carrying text, a
+ * correction or remark that changes no state. The body is exactly
+ * `{eventId, text}`, plus `origin` when the call ticket carried one (SCRUM-148;
+ * a note's origin never links a session); the text goes as given and the
+ * server stores it trimmed.
+ * The server refuses a terminal item with 409 invalid-transition.
+ */
+export async function workitemNote(
+  config: Config,
+  args: {
+    projectId: unknown;
+    itemId: unknown;
+    text: unknown;
+    eventId?: unknown;
+    origin?: WriteOrigin;
+  },
+  options: RequestOptions = {},
+): Promise<WorkitemWriteResult> {
+  const projectId = requireUuid(args.projectId, "projectId");
+  const itemId = requireUuid(args.itemId, "itemId");
+  if (
+    typeof args.text !== "string" ||
+    !args.text.trim() ||
+    args.text.trim().length > 2000
+  )
+    throw new Error(
+      "text must be non-empty text no longer than 2000 characters after trimming",
+    );
+  const eventId = requireEventId(args.eventId);
+  const body: Record<string, unknown> = { eventId, text: args.text };
+  withOrigin(body, args.origin);
+  const response = await sendJson<unknown>(
+    config,
+    "POST",
+    "/api/workitems/" +
+      encodeURIComponent(itemId) +
+      "/note" +
       projectQuery(projectId),
     body,
     options,

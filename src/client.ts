@@ -111,7 +111,7 @@ export type RequestOptions = {
   signal?: AbortSignal;
 };
 
-/** The write methods the product exposes. No DELETE: it has no delete route. */
+/** The write methods this connector sends. No DELETE: it wraps no delete route. */
 export type WriteMethod = "POST" | "PUT";
 
 async function request<T>(
@@ -184,10 +184,14 @@ async function request<T>(
   }
 
   if (!response.ok) {
-    const rawBody = (await response.text().catch(() => "")).slice(0, 400);
+    // Parse the whole body and truncate only what goes into the message. A
+    // long structured error (create_agent's partial 502 runs well past 400
+    // characters) must still reach typed callers intact (SCRUM-190).
+    const fullBody = await response.text().catch(() => "");
+    const rawBody = fullBody.slice(0, 400);
     let responseBody: unknown;
     try {
-      responseBody = rawBody ? JSON.parse(rawBody) : undefined;
+      responseBody = fullBody ? JSON.parse(fullBody) : undefined;
     } catch {
       responseBody = undefined;
     }

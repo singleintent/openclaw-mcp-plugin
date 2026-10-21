@@ -8,6 +8,8 @@ import {
   generateUuidV7,
   getWorkitem,
   listWorkitems,
+  workitemEstimate,
+  workitemNote,
   workitemSetState,
 } from "./workitems.js";
 
@@ -181,6 +183,104 @@ describe("work-item writes", () => {
     expect(result.event.actor).toBe("agent-from-server");
   });
 
+  it("sends an optional estimate on create, and only when given (SCRUM-150)", async () => {
+    const cfg = await config();
+    await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      estimate: "M",
+      eventId: EVENT,
+    });
+    expect(JSON.parse(requests[0]!.body)).toEqual({
+      eventId: EVENT,
+      title: "Task",
+      intent: "Do it",
+      estimate: "M",
+    });
+    await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      estimate: undefined,
+      eventId: EVENT,
+    });
+    expect(JSON.parse(requests[1]!.body)).not.toHaveProperty("estimate");
+  });
+
+  it("sends kind, assignee, focus and test on create only when given (SCRUM-147)", async () => {
+    const cfg = await config();
+    const FOCUS = "01890000-0000-7000-8000-0000000000f0";
+    await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      kind: "task",
+      assignee: "agent-a",
+      focus: FOCUS,
+      test: false,
+      eventId: EVENT,
+    });
+    expect(JSON.parse(requests[0]!.body)).toEqual({
+      eventId: EVENT,
+      title: "Task",
+      intent: "Do it",
+      kind: "task",
+      assignee: "agent-a",
+      focus: FOCUS,
+      test: false,
+    });
+    await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      kind: undefined,
+      assignee: undefined,
+      focus: null,
+      test: undefined,
+      eventId: EVENT,
+    });
+    expect(JSON.parse(requests[1]!.body)).toEqual({ eventId: EVENT, title: "Task", intent: "Do it" });
+  });
+
+  it("leaves assignee validation to the server and keeps its 400 invalid-assignee", async () => {
+    const cfg = await config();
+    responseStatus = 400;
+    responseBody = { error: "assignee must be an agent in this project", code: "invalid-assignee" };
+    const error = await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      assignee: "stranger",
+      eventId: EVENT,
+    }).catch((value: unknown) => value);
+    expect(JSON.parse(requests[0]!.body).assignee).toBe("stranger");
+    expect(error).toBeInstanceOf(ProductApiError);
+    expect(error).toMatchObject({ status: 400, code: "invalid-assignee" });
+  });
+
+  it("leaves estimate validation to the server and keeps its 400 invalid-estimate", async () => {
+    const cfg = await config();
+    responseStatus = 400;
+    responseBody = {
+      error: "estimate must be one of XS, S, M, L, XL",
+      code: "invalid-estimate",
+    };
+    const error = await createWorkitem(cfg, {
+      projectId: PROJECT,
+      title: "Task",
+      intent: "Do it",
+      estimate: "XXL",
+      eventId: EVENT,
+    }).catch((value: unknown) => value);
+    expect(JSON.parse(requests[0]!.body).estimate).toBe("XXL");
+    expect(error).toBeInstanceOf(ProductApiError);
+    expect(error).toMatchObject({ status: 400, code: "invalid-estimate" });
+    expect((error as Error).message).toContain(
+      "estimate must be one of XS, S, M, L, XL",
+    );
+  });
+
   it("generates a UUIDv7 when the optional id is omitted", async () => {
     const cfg = await config();
     await createWorkitem(cfg, {
@@ -240,6 +340,34 @@ describe("work-item writes", () => {
     });
   });
 
+  it("sends waitingOn on a state change only when given (SCRUM-154)", async () => {
+    const cfg = await config();
+    const base = { projectId: PROJECT, itemId: ITEM, state: "blocked", reason: "Waiting", eventId: EVENT };
+    await workitemSetState(cfg, { ...base, waitingOn: "backend-dev" });
+    await workitemSetState(cfg, { ...base, waitingOn: undefined });
+    await workitemSetState(cfg, { ...base, waitingOn: null });
+    expect(JSON.parse(requests[0]!.body)).toEqual({ eventId: EVENT, state: "blocked", reason: "Waiting", waitingOn: "backend-dev" });
+    expect(JSON.parse(requests[1]!.body)).toEqual({ eventId: EVENT, state: "blocked", reason: "Waiting" });
+    expect(JSON.parse(requests[2]!.body)).toEqual({ eventId: EVENT, state: "blocked", reason: "Waiting" });
+  });
+
+  it("leaves waitingOn rules to the server and keeps its 400 waiting-on-not-allowed (SCRUM-154)", async () => {
+    const cfg = await config();
+    responseStatus = 400;
+    responseBody = { error: "waitingOn is only allowed with state blocked", code: "waiting-on-not-allowed" };
+    const error = await workitemSetState(cfg, {
+      projectId: PROJECT,
+      itemId: ITEM,
+      state: "started",
+      waitingOn: "backend-dev",
+      eventId: EVENT,
+    }).catch((value: unknown) => value);
+    expect(JSON.parse(requests[0]!.body).waitingOn).toBe("backend-dev");
+    expect(error).toBeInstanceOf(ProductApiError);
+    expect(error).toMatchObject({ status: 400, code: "waiting-on-not-allowed" });
+    expect((error as Error).message).toContain("waitingOn is only allowed with state blocked");
+  });
+
   it("reuses the same state event id and exact request body on retry", async () => {
     const cfg = await config();
     const input = {
@@ -285,6 +413,96 @@ describe("work-item writes", () => {
     expect(requests).toEqual([]);
   });
 
+  it("sends dispatched and acknowledged with an optional reason and nothing else (SCRUM-150)", async () => {
+    const cfg = await config();
+    await workitemSetState(cfg, {
+      projectId: PROJECT,
+      itemId: ITEM,
+      state: "dispatched",
+      reason: "Handed to backend",
+      eventId: EVENT,
+    });
+    await workitemSetState(cfg, {
+      projectId: PROJECT,
+      itemId: ITEM,
+      state: "acknowledged",
+      eventId: EVENT,
+    });
+    expect(requests.map((r) => [r.method, r.url])).toEqual([
+      ["POST", "/api/workitems/" + ITEM + "/state?project=" + PROJECT],
+      ["POST", "/api/workitems/" + ITEM + "/state?project=" + PROJECT],
+    ]);
+    expect(JSON.parse(requests[0]!.body)).toEqual({
+      eventId: EVENT,
+      state: "dispatched",
+      reason: "Handed to backend",
+    });
+    expect(JSON.parse(requests[1]!.body)).toEqual({
+      eventId: EVENT,
+      state: "acknowledged",
+    });
+  });
+
+  const dispatchRefusals: [string, Record<string, unknown>, number, string, string][] = [
+    [
+      "outcome or evidence on a dispatch event (400 invalid-body)",
+      { state: "dispatched", outcome: "Done", evidence: "log" },
+      400,
+      "invalid-body",
+      "dispatched takes no outcome or evidence",
+    ],
+    [
+      "acknowledged without an earlier dispatch (409)",
+      { state: "acknowledged" },
+      409,
+      "invalid-transition",
+      "acknowledged requires a prior dispatched event",
+    ],
+    [
+      "dispatched on a started item (409)",
+      { state: "dispatched" },
+      409,
+      "invalid-transition",
+      "dispatched is not allowed: the item has already started",
+    ],
+    [
+      "acknowledged on a terminal item (409)",
+      { state: "acknowledged" },
+      409,
+      "invalid-transition",
+      "acknowledged is not allowed: the item is completed",
+    ],
+    [
+      // Mocked: the server returns this once Backend's SCRUM-144 commit lands.
+      "a per-agent caller that is not the assignee (403 not-assignee)",
+      { state: "acknowledged" },
+      403,
+      "not-assignee",
+      "only the assignee can acknowledge this item",
+    ],
+  ];
+
+  for (const [label, extra, status, code, message] of dispatchRefusals) {
+    it(`passes the server's ${label} through unchanged`, async () => {
+      const cfg = await config();
+      responseStatus = status;
+      responseBody = { error: message, code };
+      const error = await workitemSetState(cfg, {
+        projectId: PROJECT,
+        itemId: ITEM,
+        eventId: EVENT,
+        ...extra,
+      } as Parameters<typeof workitemSetState>[1]).catch((value: unknown) => value);
+      expect(requests).toHaveLength(1);
+      const sent = JSON.parse(requests[0]!.body);
+      for (const [key, value] of Object.entries(extra)) expect(sent[key]).toBe(value);
+      expect(error).toBeInstanceOf(ProductApiError);
+      if (status === 409) expect(error).toBeInstanceOf(ProductConflictError);
+      expect(error).toMatchObject({ status, code });
+      expect((error as Error).message).toContain(message);
+    });
+  }
+
   it("exposes useful typed API conflict errors with server code and status", async () => {
     const cfg = await config();
     responseStatus = 409;
@@ -306,4 +524,157 @@ describe("work-item writes", () => {
       "transition open -> completed is not allowed",
     );
   });
+});
+
+describe("work-item re-estimate (SCRUM-150)", () => {
+  it("posts exactly eventId and size to the project-scoped estimate route", async () => {
+    const cfg = await config();
+    await workitemEstimate(cfg, { projectId: PROJECT, itemId: ITEM, size: "L", eventId: EVENT });
+    expect(requests[0]).toMatchObject({
+      method: "POST",
+      url: "/api/workitems/" + ITEM + "/estimate?project=" + PROJECT,
+    });
+    expect(JSON.parse(requests[0]!.body)).toEqual({ eventId: EVENT, size: "L" });
+  });
+
+  it("generates a UUIDv7 and reuses a supplied one byte-for-byte on retry", async () => {
+    const cfg = await config();
+    await workitemEstimate(cfg, { projectId: PROJECT, itemId: ITEM, size: "S" });
+    expect(JSON.parse(requests[0]!.body).eventId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    const input = { projectId: PROJECT, itemId: ITEM, size: "S", eventId: EVENT };
+    await workitemEstimate(cfg, input);
+    responseBody = detail({ deduplicated: true });
+    const retry = await workitemEstimate(cfg, input);
+    expect(requests[1]!.body).toBe(requests[2]!.body);
+    expect(retry.deduplicated).toBe(true);
+  });
+
+  it("refuses missing scope or size before HTTP", async () => {
+    const cfg = await config();
+    await expect(
+      workitemEstimate(cfg, { projectId: PROJECT, itemId: "nope", size: "M" }),
+    ).rejects.toThrow(/itemId/);
+    await expect(
+      workitemEstimate(cfg, { projectId: PROJECT, itemId: ITEM, size: undefined }),
+    ).rejects.toThrow(/size is required/);
+    expect(requests).toEqual([]);
+  });
+
+  const refusals: [string, unknown, number, string, string][] = [
+    ["an unknown size (400 invalid-estimate)", "XXL", 400, "invalid-estimate", "size must be one of XS, S, M, L, XL"],
+    ["a terminal item (409)", "M", 409, "invalid-transition", "a completed item cannot be re-estimated"],
+  ];
+
+  for (const [label, size, status, code, message] of refusals) {
+    it(`passes the server's refusal of ${label} through unchanged`, async () => {
+      const cfg = await config();
+      responseStatus = status;
+      responseBody = { error: message, code };
+      const error = await workitemEstimate(cfg, {
+        projectId: PROJECT,
+        itemId: ITEM,
+        size,
+        eventId: EVENT,
+      }).catch((value: unknown) => value);
+      expect(JSON.parse(requests[0]!.body)).toEqual({ eventId: EVENT, size });
+      expect(error).toBeInstanceOf(ProductApiError);
+      if (status === 409) expect(error).toBeInstanceOf(ProductConflictError);
+      expect(error).toMatchObject({ status, code });
+      expect((error as Error).message).toContain(message);
+    });
+  }
+});
+
+describe("work-item note (SCRUM-170)", () => {
+  it("posts exactly eventId and text to the project-scoped note route", async () => {
+    const cfg = await config();
+    await workitemNote(cfg, { projectId: PROJECT, itemId: ITEM, text: "  Scope was wrong  ", eventId: EVENT });
+    expect(requests[0]).toMatchObject({
+      method: "POST",
+      url: "/api/workitems/" + ITEM + "/note?project=" + PROJECT,
+    });
+    // The text goes as given; trimming and storing it is the server's.
+    expect(JSON.parse(requests[0]!.body)).toEqual({ eventId: EVENT, text: "  Scope was wrong  " });
+  });
+
+  it.each([
+    [{ sessionKey: "agent:a:main", runId: "r" }],
+    [{ sessionKey: "agent:a:main" }],
+  ])("adds the origin %j to the body when given, and nothing when not", async (origin) => {
+    const cfg = await config();
+    await workitemNote(cfg, { projectId: PROJECT, itemId: ITEM, text: "x", eventId: EVENT, origin });
+    expect(JSON.parse(requests[0]!.body)).toEqual({ eventId: EVENT, text: "x", origin });
+    await workitemNote(cfg, { projectId: PROJECT, itemId: ITEM, text: "x", eventId: EVENT });
+    expect(JSON.parse(requests[1]!.body)).toEqual({ eventId: EVENT, text: "x" });
+  });
+
+  it("generates a UUIDv7 and reuses a supplied one byte-for-byte on retry", async () => {
+    const cfg = await config();
+    await workitemNote(cfg, { projectId: PROJECT, itemId: ITEM, text: "x" });
+    expect(JSON.parse(requests[0]!.body).eventId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    const input = { projectId: PROJECT, itemId: ITEM, text: "x", eventId: EVENT };
+    await workitemNote(cfg, input);
+    await workitemNote(cfg, input);
+    expect(requests[1]!.body).toBe(requests[2]!.body);
+  });
+
+  it("accepts 2000 characters after trimming, even with surrounding whitespace", async () => {
+    const cfg = await config();
+    await workitemNote(cfg, { projectId: PROJECT, itemId: ITEM, text: " " + "x".repeat(2000) + " ", eventId: EVENT });
+    expect(requests).toHaveLength(1);
+  });
+
+  it.each([
+    ["an invalid itemId", { itemId: "nope", text: "x" }, /itemId/],
+    ["an invalid eventId", { itemId: ITEM, text: "x", eventId: "not-a-uuid" }, /eventId/],
+    ["missing text", { itemId: ITEM, text: undefined }, /text must be/],
+    ["non-string text", { itemId: ITEM, text: 7 }, /text must be/],
+    ["whitespace-only text", { itemId: ITEM, text: " \n\t " }, /text must be/],
+    ["text over 2000 characters after trimming", { itemId: ITEM, text: "x".repeat(2001) }, /text must be/],
+  ])("refuses %s before HTTP", async (_label, args, message) => {
+    const cfg = await config();
+    await expect(workitemNote(cfg, { projectId: PROJECT, ...args })).rejects.toThrow(message);
+    expect(requests).toEqual([]);
+  });
+
+  it.each([
+    [201, false],
+    [200, true],
+  ])("returns the server's %i envelope with deduplicated %s", async (status, deduplicated) => {
+    const cfg = await config();
+    responseStatus = status;
+    const noted = { id: EVENT, type: "noted", actor: "agent-from-server", at: "2026-10-11T00:00:00Z", text: "x" };
+    responseBody = detail({ event: noted, events: [event, noted], deduplicated });
+    const result = await workitemNote(cfg, { projectId: PROJECT, itemId: ITEM, text: "x", eventId: EVENT });
+    expect(result).toEqual(detail({ event: noted, events: [event, noted], deduplicated }));
+  });
+
+  const refusals: [string, number, string, string][] = [
+    ["a terminal item", 409, "invalid-transition", "a completed item cannot be noted"],
+    ["a reused eventId", 409, "event-conflict", "event " + EVENT + " already exists with different content"],
+    ["invalid text", 400, "invalid-text", "text must be 1-2000 characters"],
+    ["an unknown item", 404, "not-found", "work item not found"],
+  ];
+
+  for (const [label, status, code, message] of refusals) {
+    it(`passes the server's ${status} ${code} for ${label} through unchanged`, async () => {
+      const cfg = await config();
+      responseStatus = status;
+      responseBody = { error: message, code };
+      const error = await workitemNote(cfg, {
+        projectId: PROJECT,
+        itemId: ITEM,
+        text: "x",
+        eventId: EVENT,
+      }).catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(ProductApiError);
+      if (status === 409) expect(error).toBeInstanceOf(ProductConflictError);
+      expect(error).toMatchObject({ status, code });
+      expect((error as Error).message).toContain(message);
+    });
+  }
 });

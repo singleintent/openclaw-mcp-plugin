@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  NOT_REVERSIBLE,
+  REVERSIBILITY,
   optionalText,
   requireAgentId,
   requireFilledText,
@@ -154,11 +154,24 @@ describe("requireUuid", () => {
   );
 });
 
-describe("NOT_REVERSIBLE", () => {
-  it("names the reason, not just the fact", () => {
-    // A caller told only "cannot be undone" will look for the delete verb. Told
-    // there is no delete route, they stop looking.
-    expect(NOT_REVERSIBLE).toMatch(/no delete route/);
-    expect(NOT_REVERSIBLE).toMatch(/cannot be undone/);
+describe("REVERSIBILITY (SCRUM-191)", () => {
+  it("covers exactly the five irreversible verbs, each opening the same way", () => {
+    expect(Object.keys(REVERSIBILITY).sort()).toEqual([
+      "apply_role",
+      "create_agent",
+      "create_connection",
+      "create_project",
+      "create_template",
+    ]);
+    for (const sentence of Object.values(REVERSIBILITY)) {
+      expect(sentence).toMatch(/^This cannot be undone from here\. /);
+    }
+  });
+
+  it("no longer claims the product has no delete route at all", () => {
+    // The product has DELETE /api/agents/:id; a blanket claim was false.
+    for (const sentence of Object.values(REVERSIBILITY)) {
+      expect(sentence).not.toMatch(/exposes no delete route/);
+    }
   });
 });
