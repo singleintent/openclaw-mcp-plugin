@@ -1,6 +1,6 @@
 /** SCRUM-201: bounded, observe-only Gateway action-policy adapter. */
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import type { AuditRow, AuditSink } from "./action-policy-audit.js";
 
@@ -46,9 +46,16 @@ export function actionPolicyConfig(
   };
   const path = actionPolicyCredentialPath(engineStateDir, env);
   if (!path) return unavailable("path unavailable");
+  try {
+    const dir = lstatSync(dirname(path));
+    if (!dir.isDirectory() || dir.isSymbolicLink() ||
+        (process.getuid?.() !== undefined && dir.uid !== process.getuid?.()) ||
+        (dir.mode & 0o077) !== 0) return unavailable("unsafe directory");
+  } catch { return unavailable("missing or unreadable directory"); }
   let contents: string;
   let fd: number;
-  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  // O_NONBLOCK prevents a FIFO at this path from stalling the synchronous Gateway hook.
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch { return unavailable("missing or unreadable"); }
   try {
     const stat = fstatSync(fd);

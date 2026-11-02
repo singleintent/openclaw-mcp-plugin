@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -89,7 +90,7 @@ const credentialRoot = () => {
   const root = mkdtempSync(join(tmpdir(), "si-action-credential-"));
   const dir = join(root, "singleintent");
   mkdirSync(dir, { mode: 0o700 });
-  return { root, file: join(dir, "action-adapter.json") };
+  return { root, dir, file: join(dir, "action-adapter.json") };
 };
 const writeCredential = (file: string, url = "http://127.0.0.1:5189", token = "a".repeat(32)) =>
   writeFileSync(file, JSON.stringify({ url, token }), { mode: 0o600 });
@@ -164,6 +165,57 @@ it.each(["symlink", "group-readable", "other-readable", "non-loopback", "invalid
     } finally { rmSync(root, { recursive: true, force: true }); }
   },
 );
+
+it("rejects a FIFO and unsafe parent directory without an HTTP request", async () => {
+  const { root, dir, file } = credentialRoot();
+  const warnings: string[] = [];
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    execFileSync("mkfifo", [file]);
+    expect(actionPolicyConfig({}, root, { warn: s => warnings.push(s) })).toBeUndefined();
+    rmSync(file);
+    writeCredential(file);
+    chmodSync(dir, 0o770);
+    expect(actionPolicyConfig({}, root, { warn: s => warnings.push(s) })).toBeUndefined();
+    chmodSync(dir, 0o700);
+    rmSync(dir, { recursive: true });
+    const target = join(root, "target-dir");
+    mkdirSync(target, { mode: 0o700 });
+    writeCredential(join(target, "action-adapter.json"));
+    symlinkSync(target, dir);
+    expect(actionPolicyConfig({}, root, { warn: s => warnings.push(s) })).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("unsafe file"),
+      expect.stringContaining("unsafe directory"),
+    ]));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("re-reads the credential between decision and observation", async () => {
+  const { root, file } = credentialRoot();
+  const calls: Array<{ url: string; authorization: string | null }> = [];
+  const warnings: string[] = [];
+  try {
+    writeCredential(file, "http://127.0.0.1:5189", "a".repeat(32));
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, authorization: new Headers(init.headers).get("authorization") });
+      return { ok: true, json: async () => ({ decisionId: "d1", mode: "observe", policyVersion: "pv1", disposition: "allow" }) };
+    }));
+    const observer = createActionPolicyObserver(() => actionPolicyConfig({}, root, { warn: s => warnings.push(s) }), { warn: s => warnings.push(s) });
+    const event = { toolName: "sessions_send", params: {}, toolCallId: "changed-between-hooks" };
+    await observer.before(event, {});
+    rmSync(file);
+    writeCredential(file, "http://127.0.0.1:5190", "b".repeat(32));
+    await observer.after({ ...event, result: {} }, {});
+    expect(calls).toEqual([
+      { url: "http://127.0.0.1:5189/api/action-decisions", authorization: `Bearer ${"a".repeat(32)}` },
+      { url: "http://127.0.0.1:5190/api/action-observations", authorization: `Bearer ${"b".repeat(32)}` },
+    ]);
+    expect(warnings).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 it("does not forward model work-item or exception claims when no trusted project pin exists", async () => {
   const requests: Record<string, unknown>[] = [];
