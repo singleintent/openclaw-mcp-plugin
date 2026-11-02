@@ -931,7 +931,7 @@ servers merge into the `bundle-mcp` namespace, which the default `coding` and
 scoped under the plugin id and would require a hand-edited allowlist that an
 install cannot write for itself.
 
-### Observe-only action-policy hooks (0.1.4)
+### Observe-only action-policy hooks (0.1.5)
 
 The plugin also registers `before_tool_call` and `after_tool_call` hooks for the
 dynamic `sessions_send` and `sessions_spawn` aliases. These hooks record policy
@@ -1006,7 +1006,7 @@ printf '%s\n%s\n%s\n' \
 Expected, from the plugin's install path:
 
 ```json
-{"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.4"}},"jsonrpc":"2.0","id":1}
+{"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"singleintent","version":"0.1.5"}},"jsonrpc":"2.0","id":1}
 {"result":{"tools":[{"name":"list_projects", ...},{"name":"get_project", ...},{"name":"list_agents", ...},{"name":"list_templates", ...},{"name":"list_connections", ...},{"name":"get_backlog", ...},{"name":"get_activity", ...},{"name":"create_project", ...},{"name":"create_agent", ...},{"name":"create_template", ...},{"name":"update_template", ...},{"name":"apply_role", ...},{"name":"create_connection", ...},{"name":"send_message", ...}]},"jsonrpc":"2.0","id":2}
 ```
 
