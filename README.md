@@ -938,13 +938,14 @@ dynamic `sessions_send` and `sessions_spawn` aliases. These hooks record policy
 decisions and execution observations; they never block, approve, or rewrite a
 tool call. They do not cover native Codex, CLI/RPC, or direct HTTP actions.
 
-Set the same `SINGLEINTENT_ACTION_ADAPTER_TOKEN` in the Gateway process and the
-SingleIntent server process. It must be at least 32 characters. The Gateway
-defaults to `http://127.0.0.1:5173`; set `SINGLEINTENT_ACTION_POLICY_URL` only
-if the server is on another loopback port. Optionally set
-`SINGLEINTENT_ACTION_POLICY_PROJECT_ID` to pin the host-selected project. Never
-put the token in agent instructions or tool arguments. A missing configuration
-records a local indeterminate observation and does not prevent the action.
+The SingleIntent product provisions `<engine state dir>/singleintent/action-adapter.json`
+with mode 0600 and a loopback URL and bearer token. The plugin reads this file
+for each report, so a newly created credential or changed port takes effect
+without a Gateway restart. URL and token environment variables are not used.
+Optionally set `SINGLEINTENT_ACTION_POLICY_PROJECT_ID` to pin the host-selected
+project. Never put the token in agent instructions or tool arguments. A missing
+or unsafe credential records a local indeterminate observation and does not
+prevent the action.
 
 Restart the Gateway after installing or updating the plugin; replacing files
 does not activate the hooks in an already running process.

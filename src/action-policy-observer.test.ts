@@ -1,5 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { actionPolicyConfig, createActionPolicyObserver } from "./action-policy-observer.js";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { actionPolicyConfig, actionPolicyCredentialPath, createActionPolicyObserver } from "./action-policy-observer.js";
 
 const config = {
   url: "http://127.0.0.1:5173",
@@ -42,12 +45,21 @@ it("smokes observe-only send decision and separate execution/transport evidence 
   expect(warnings).toEqual([]);
 });
 
+it("does not leak a bearer token from an HTTP failure into logs", async () => {
+  const token = "a".repeat(32);
+  const warnings: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async () => { throw new Error(`transport included ${token}`); }));
+  const observer = createActionPolicyObserver({ ...config, token }, { warn: s => warnings.push(s) });
+  await observer.before({ toolName: "sessions_send", params: {}, toolCallId: "no-leak" }, {});
+  expect(warnings.join(" ")).not.toContain(token);
+});
+
 it("lets the tool continue when the policy service is unavailable", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
   const warnings: string[] = [];
   const observer = createActionPolicyObserver(config, { warn: (message) => warnings.push(message) });
   expect(await observer.before({ toolName: "sessions_spawn", params: {}, toolCallId: "call-2" }, { agentId: "actor" })).toBeUndefined();
-  expect(warnings).toEqual(["SCRUM-201 observe decision unavailable for spawn_session: offline"]);
+  expect(warnings).toEqual(["SCRUM-201 observe decision unavailable for spawn_session: unreachable"]);
 });
 
 
@@ -66,13 +78,92 @@ it("labels a nested dynamic action as code_mode only while a host-marked cell is
 });
 
 
-it("accepts an isolated loopback config with a valid project UUID", () => {
-  expect(actionPolicyConfig({
-    SINGLEINTENT_ACTION_ADAPTER_TOKEN: "a".repeat(32),
-    SINGLEINTENT_ACTION_POLICY_URL: "http://127.0.0.1:5189",
-    SINGLEINTENT_ACTION_POLICY_PROJECT_ID: "3c4d0a91-69f9-445c-a19c-f354b60a61c0",
-  })?.projectId).toBe("3c4d0a91-69f9-445c-a19c-f354b60a61c0");
+it("resolves the engine state first and OPENCLAW_CONFIG_PATH directory second", () => {
+  const env = { OPENCLAW_CONFIG_PATH: "/fallback/profile/openclaw.json" };
+  expect(actionPolicyCredentialPath("/gateway/profile", env)).toBe("/gateway/profile/singleintent/action-adapter.json");
+  expect(actionPolicyCredentialPath(undefined, env)).toBe("/fallback/profile/singleintent/action-adapter.json");
+  expect(actionPolicyCredentialPath(undefined, {})).toBeUndefined();
 });
+
+const credentialRoot = () => {
+  const root = mkdtempSync(join(tmpdir(), "si-action-credential-"));
+  const dir = join(root, "singleintent");
+  mkdirSync(dir, { mode: 0o700 });
+  return { root, file: join(dir, "action-adapter.json") };
+};
+const writeCredential = (file: string, url = "http://127.0.0.1:5189", token = "a".repeat(32)) =>
+  writeFileSync(file, JSON.stringify({ url, token }), { mode: 0o600 });
+
+it("reads the product-owned file and posts with its bearer token", async () => {
+  const { root, file } = credentialRoot();
+  const calls: Array<{ url: string; authorization: string | null }> = [];
+  const token = "z".repeat(32);
+  try {
+    writeCredential(file, "http://127.0.0.1:5189", token);
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, authorization: new Headers(init.headers).get("authorization") });
+      return { ok: true, json: async () => ({ decisionId: "d1", mode: "observe", policyVersion: "pv1", disposition: "allow" }) };
+    }));
+    const warnings: string[] = [];
+    const observer = createActionPolicyObserver(() => actionPolicyConfig({ SINGLEINTENT_ACTION_POLICY_PROJECT_ID: "3c4d0a91-69f9-445c-a19c-f354b60a61c0" }, root, { warn: s => warnings.push(s) }), { warn: s => warnings.push(s) });
+    const event = { toolName: "sessions_send", params: {}, toolCallId: "file-1" };
+    await observer.before(event, {});
+    await observer.after({ ...event, result: {} }, {});
+    expect(calls).toEqual([
+      { url: "http://127.0.0.1:5189/api/action-decisions", authorization: `Bearer ${token}` },
+      { url: "http://127.0.0.1:5189/api/action-observations", authorization: `Bearer ${token}` },
+    ]);
+    expect(warnings).toEqual([]);
+    expect(actionPolicyConfig({ SINGLEINTENT_ACTION_POLICY_PROJECT_ID: "3c4d0a91-69f9-445c-a19c-f354b60a61c0" }, root)?.projectId)
+      .toBe("3c4d0a91-69f9-445c-a19c-f354b60a61c0");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("ignores legacy URL/token env vars when the file is absent, then picks up a file created after startup", async () => {
+  const { root, file } = credentialRoot();
+  const env = { SINGLEINTENT_ACTION_ADAPTER_TOKEN: "x".repeat(32), SINGLEINTENT_ACTION_POLICY_URL: "http://127.0.0.1:5173" };
+  const warnings: string[] = [];
+  const requests: string[] = [];
+  try {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      requests.push(url);
+      return { ok: true, json: async () => ({ decisionId: "d1", mode: "observe", policyVersion: "pv1", disposition: "allow" }) };
+    }));
+    const observer = createActionPolicyObserver(() => actionPolicyConfig(env, root, { warn: s => warnings.push(s) }), { warn: s => warnings.push(s) });
+    await observer.before({ toolName: "sessions_spawn", params: {}, toolCallId: "missing" }, {});
+    expect(requests).toEqual([]);
+    writeCredential(file);
+    await observer.before({ toolName: "sessions_spawn", params: {}, toolCallId: "created" }, {});
+    expect(requests).toEqual(["http://127.0.0.1:5189/api/action-decisions"]);
+    writeCredential(file, "http://127.0.0.1:5190", "b".repeat(32));
+    await observer.before({ toolName: "sessions_spawn", params: {}, toolCallId: "changed" }, {});
+    expect(requests.at(-1)).toBe("http://127.0.0.1:5190/api/action-decisions");
+    expect(warnings.join(" ")).not.toContain(env.SINGLEINTENT_ACTION_ADAPTER_TOKEN);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it.each(["symlink", "group-readable", "other-readable", "non-loopback", "invalid-token", "malformed-json"])(
+  "refuses %s credential without a request or token in logs", async (caseName) => {
+    const { root, file } = credentialRoot();
+    const token = "secret".repeat(8);
+    const warnings: string[] = [];
+    try {
+      writeCredential(file, "http://127.0.0.1:5189", token);
+      if (caseName === "symlink") { rmSync(file); const target = join(root, "target.json"); writeCredential(target, "http://127.0.0.1:5189", token); symlinkSync(target, file); }
+      if (caseName === "group-readable") chmodSync(file, 0o640);
+      if (caseName === "other-readable") chmodSync(file, 0o604);
+      if (caseName === "non-loopback") writeCredential(file, "http://example.com:5189", token);
+      if (caseName === "invalid-token") writeCredential(file, "http://127.0.0.1:5189", "bad token");
+      if (caseName === "malformed-json") writeFileSync(file, "{bad", { mode: 0o600 });
+      const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+      const observer = createActionPolicyObserver(() => actionPolicyConfig({}, root, { warn: s => warnings.push(s) }), { warn: s => warnings.push(s) });
+      await observer.before({ toolName: "sessions_send", params: {}, toolCallId: caseName }, {});
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(warnings.join(" ")).not.toContain(token);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  },
+);
 
 it("does not forward model work-item or exception claims when no trusted project pin exists", async () => {
   const requests: Record<string, unknown>[] = [];

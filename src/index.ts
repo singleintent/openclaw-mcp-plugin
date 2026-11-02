@@ -218,7 +218,7 @@ export default definePluginEntry({
     let audit;
     try { audit = createActionAudit(deps.engineStateDir()); }
     catch { api.logger?.warn("SCRUM-201 local action audit unavailable; evidence incomplete"); }
-    const observer = createActionPolicyObserver(actionPolicyConfig(), api.logger, audit);
+    const observer = createActionPolicyObserver(() => actionPolicyConfig(process.env, deps.engineStateDir(), api.logger), api.logger, audit);
     api.on("before_tool_call", async (event, ctx) => {
       const ticket = issueCallTicket(event, ctx, deps);
       await observer.before(event, ctx);
